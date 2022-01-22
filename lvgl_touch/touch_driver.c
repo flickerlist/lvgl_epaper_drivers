@@ -4,10 +4,8 @@
 
 #include "touch_driver.h"
 #include "tp_spi.h"
-
 // Is not being included in CMakeLists.txt (Research why)
 #include "l58.h"
-
 
 void touch_driver_init(void)
 {

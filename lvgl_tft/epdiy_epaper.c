@@ -79,7 +79,6 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
   // UNCOMMENT only one of this options
   // SAFE Option with EPDiy copy of epd_copy_to_framebuffer
-
   buf_copy_to_framebuffer(update_area, buf);
 
   //Faster mode suggested in LVGL forum (Leaves ghosting&prints bad sections / experimental) NOTE: Do NOT use in production
