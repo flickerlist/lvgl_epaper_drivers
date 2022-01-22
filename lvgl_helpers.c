@@ -114,6 +114,8 @@ void lvgl_driver_init(void)
     ESP_LOGI(TAG, "Initializing Parallel driver for display");
     // Check how not to initialize SPI. disp_driver_init() call is needed:
     disp_driver_init();
+#elif defined (CONFIG_LV_I2C_DISPLAY)
+    disp_driver_init();
 #else
     #error "No protocol defined for display controller"
 #endif
@@ -165,6 +167,10 @@ bool lvgl_spi_driver_init(int host,
     int dma_channel,
     int quadwp_pin, int quadhd_pin)
 {
+    /**
+     * @brief in idf 4.3 is giving me an error:
+     *        error: 'SPI_HOST_MAX' undeclared
+     */
     assert((0 <= host) && (SPI_HOST_MAX > host));
     const char *spi_names[] = {
         "SPI1_HOST", "SPI2_HOST", "SPI3_HOST"
