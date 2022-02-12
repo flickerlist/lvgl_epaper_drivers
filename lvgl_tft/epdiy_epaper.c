@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "time.h"
 
 EpdiyHighlevelState hl;
 uint16_t            flushcalls = 0;
@@ -67,6 +68,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   uint16_t w = lv_area_get_width(area);
   uint16_t h = lv_area_get_height(area);
 
+  ESP_LOGI("epd",
+           "flush start. count index: %d; "
+           "x:%d y:%d w:%d h:%d; ",
+           flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h);
+
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
 
@@ -80,17 +86,30 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   // UNCOMMENT only one of this options
   // SAFE Option with EPDiy copy of epd_copy_to_framebuffer
 
+  clock_t time_1 = clock();
+
   buf_copy_to_framebuffer(update_area, buf);
+
+  clock_t time_2 = clock();
 
   //Faster mode suggested in LVGL forum (Leaves ghosting&prints bad sections / experimental) NOTE: Do NOT use in production
   //buf_area_to_framebuffer(area, buf);
 
   epd_hl_update_area(&hl, updateMode, temperature, update_area);  //update_area
 
-  printf("epdiy_flush %d x:%d y:%d w:%d h:%d;\n", flushcalls,
-         (uint16_t)area->x1, (uint16_t)area->y1, w, h);
+  clock_t time_3 = clock();
+
   /* Inform the graphics library that you are ready with the flushing */
   lv_disp_flush_ready(drv);
+
+  ESP_LOGI("epd",
+           "flush finished. count index: %d; "
+           "x:%d y:%d w:%d h:%d; "
+           "copy mem time: %ld ms; "
+           "update_area time: %ld ms; ",
+           flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h,
+           (time_2 - time_1) / (CLOCKS_PER_SEC / 1000),
+           (time_3 - time_2) / (CLOCKS_PER_SEC / 1000));
 }
 
 /*
