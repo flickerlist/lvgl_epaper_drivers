@@ -2,6 +2,7 @@
 #include "epd_driver.h"
 #include "epd_highlevel.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "time.h"
@@ -14,12 +15,86 @@ bool                init        = true;
 // MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
 enum EpdDrawMode updateMode = MODE_GC16;
 
+// batch update recorder
+static uint8_t            batch_update_size   = 0;
+static EpdRect*           batch_update_areas  = NULL;
+static esp_timer_handle_t batch_timer_handler = NULL;
+static void               batch_timer_cb(void* arg);
+static void               batch_timer_start();
+static void               batch_add_to_list(EpdRect* update_area);
+static void               batch_flush(void* arg);
+
+static void batch_timer_cb(void* arg) {
+  batch_timer_handler = NULL;
+  batch_flush(NULL);
+}
+
+static void batch_timer_start() {
+  esp_timer_init();
+
+  if (batch_timer_handler != NULL) {
+    esp_timer_stop(batch_timer_handler);
+    esp_timer_delete(batch_timer_handler);
+    batch_timer_handler = NULL;
+  }
+  esp_timer_create_args_t args = {
+    .callback        = batch_timer_cb,
+    .arg             = NULL,
+    .dispatch_method = ESP_TIMER_TASK,
+    .name            = "batch_timer",
+  };
+  esp_timer_create(&args, &batch_timer_handler);
+  esp_timer_start_once(batch_timer_handler, 100e3);
+}
+
+// add to batch
+static void batch_add_to_list(EpdRect* update_area) {
+  size_t size_unit = sizeof(EpdRect);
+
+  EpdRect* new_update_areas =
+    heap_caps_malloc(size_unit * (batch_update_size + 1), MALLOC_CAP_SPIRAM);
+  if (batch_update_size > 0) {
+    memcpy(new_update_areas, batch_update_areas, batch_update_size * size_unit);
+  }
+  memcpy(new_update_areas + batch_update_size, update_area, size_unit);
+  if (batch_update_areas) {
+    heap_caps_free(batch_update_areas);
+  }
+  batch_update_size++;
+  batch_update_areas = new_update_areas;
+
+  batch_timer_start();
+}
+
+// batch flush
+static void batch_flush(void* arg) {
+  if (batch_update_size == 0) {
+    return;
+  }
+  clock_t time_1 = clock();
+  epd_poweron();
+  for (int8_t ind = 0; ind < batch_update_size; ind++) {
+    EpdRect* area = (batch_update_areas + ind);
+    epd_hl_update_area(&hl, updateMode, temperature, *area);
+  }
+  clock_t time_2 = clock();
+
+  heap_caps_free(batch_update_areas);
+  batch_update_areas = NULL;
+
+  ESP_LOGI("batch_flush", "batch_update_size: %d; flush time: %ld ms; ",
+           batch_update_size, time_2 - time_1);
+  batch_update_size = 0;
+
+  epd_poweroff();
+}
+
 /* Display initialization routine */
 void epdiy_init(void) {
   epd_init(EPD_OPTIONS_DEFAULT);
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
-  epd_poweron();
+  epd_poweroff();
   //Clear all always in init:
   epd_fullclear(&hl, temperature);
 }
@@ -95,21 +170,12 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   //Faster mode suggested in LVGL forum (Leaves ghosting&prints bad sections / experimental) NOTE: Do NOT use in production
   //buf_area_to_framebuffer(area, buf);
 
-  epd_hl_update_area(&hl, updateMode, temperature, update_area);  //update_area
+  batch_add_to_list(&update_area);
 
   clock_t time_3 = clock();
 
   /* Inform the graphics library that you are ready with the flushing */
   lv_disp_flush_ready(drv);
-
-  ESP_LOGI("epd",
-           "flush finished. count index: %d; "
-           "x:%d y:%d w:%d h:%d; "
-           "copy mem time: %ld ms; "
-           "update_area time: %ld ms; ",
-           flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h,
-           (time_2 - time_1) / (CLOCKS_PER_SEC / 1000),
-           (time_3 - time_2) / (CLOCKS_PER_SEC / 1000));
 }
 
 /*
