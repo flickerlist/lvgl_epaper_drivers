@@ -82,7 +82,7 @@ TPoint L58Touch::processTouch() {
   point.y     = lastY;
   point.event = lastEvent;
 
-  if (gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT) == 0) {
+  if (gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT) == 1) {
     TPoint point = scanPoint();
     lastX        = point.x;
     lastY        = point.y;
