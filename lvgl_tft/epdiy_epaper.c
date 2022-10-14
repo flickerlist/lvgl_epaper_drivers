@@ -82,8 +82,8 @@ static void batch_flush(void* arg) {
   heap_caps_free(batch_update_areas);
   batch_update_areas = NULL;
 
-  ESP_LOGI("batch_flush", "batch_update_size: %d; flush time: %ld ms; ",
-           batch_update_size, time_2 - time_1);
+  //   ESP_LOGI("batch_flush", "batch_update_size: %d; flush time: %ld ms; ",
+  //            batch_update_size, time_2 - time_1);
   batch_update_size = 0;
 
   epd_poweroff();
@@ -143,10 +143,10 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   uint16_t w = lv_area_get_width(area);
   uint16_t h = lv_area_get_height(area);
 
-  ESP_LOGI("epd",
-           "flush start. count index: %d; "
-           "x:%d y:%d w:%d h:%d; ",
-           flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h);
+  //   ESP_LOGI("epd",
+  //            "flush start. count index: %d; "
+  //            "x:%d y:%d w:%d h:%d; ",
+  //            flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h);
 
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
