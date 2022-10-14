@@ -8,6 +8,21 @@
 L58Touch*          L58Touch::_instance = nullptr;
 static const char* TAG                 = "i2c-touch";
 
+/**
+ * Record the interrupt of intPin.
+ * When interrupt triggered, set to '1', after used, set to '0'.
+ *
+ * Default '1' to force read data at the first time.
+ */
+static uint8_t interrupt_trigger = 1;
+
+// touch interrupt handler
+static void IRAM_ATTR gpio_isr_handler(void* arg) {
+  if (interrupt_trigger == 0) {
+    interrupt_trigger = 1;
+  }
+}
+
 L58Touch::L58Touch(int8_t intPin) {
   _instance = this;
   printf("I2C sda:%d scl:%d int:%d\n\n", CONFIG_LV_TOUCH_I2C_SDA,
@@ -57,9 +72,10 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
   io_conf.pull_down_en = (gpio_pulldown_t)0;  // disable pull-down mode
   io_conf.pull_up_en   = (gpio_pullup_t)1;  // pull-up mode
   gpio_config(&io_conf);
-  /* INT gpio is not declared as an interrupt PIN in this touch version since we cannot do
-       blocking functions in LVGL:
-    */
+
+  // INT gpio interrupt handler
+  gpio_isr_handler_add((gpio_num_t)CONFIG_LV_TOUCH_INT, gpio_isr_handler, NULL);
+
   uint8_t buf[2] = {0xD1, 0X06};
   writeData(buf, sizeof(buf));
   return true;
@@ -82,11 +98,13 @@ TPoint L58Touch::processTouch() {
   point.y     = lastY;
   point.event = lastEvent;
 
-  if (gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT) == 1) {
-    TPoint point = scanPoint();
-    lastX        = point.x;
-    lastY        = point.y;
-    lastEvent    = point.event;
+  if (interrupt_trigger == 1) {
+    interrupt_trigger = 0;
+
+    point     = scanPoint();
+    lastX     = point.x;
+    lastY     = point.y;
+    lastEvent = point.event;
   }
 
   return point;
