@@ -14,12 +14,16 @@ static const char* TAG                 = "i2c-touch";
  *
  * Default '1' to force read data at the first time.
  */
-static uint8_t interrupt_trigger = 1;
+static uint8_t                interrupt_trigger      = 1;
+static TouchInterruptHandler* _touchInterruptHandler = nullptr;
 
 // touch interrupt handler
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
   if (interrupt_trigger == 0) {
     interrupt_trigger = 1;
+  }
+  if (_touchInterruptHandler) {
+    _touchInterruptHandler();
   }
 }
 
@@ -85,6 +89,10 @@ void L58Touch::registerTouchHandler(void (*fn)(TPoint point, TEvent e)) {
   _touchHandler = fn;
   if (CONFIG_L58_DEBUG)
     printf("Touch handler function registered\n");
+}
+
+void L58Touch::registerTouchInterruptHandler(TouchInterruptHandler* fn) {
+  _touchInterruptHandler = fn;
 }
 
 TPoint L58Touch::loop() {
