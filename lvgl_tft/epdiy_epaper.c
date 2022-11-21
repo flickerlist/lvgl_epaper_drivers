@@ -188,19 +188,5 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_coord_t     y,
                      lv_color_t     color,
                      lv_opa_t       opa) {
-  // Note: don't neet to call if use lv_color8_t
-
-  // Test using RGB332
-  int16_t epd_color = 255;
-  if ((int16_t)color.full < 250) {
-    epd_color = (updateMode == MODE_DU) ? 0 : (int16_t)color.full / 3;
-  }
-
-  //Instead of using epd_draw_pixel: Set pixel directly in *buf that comes afterwards in flush as *color_map
-  uint16_t idx = (int16_t)y * buf_w / 2 + (int16_t)x / 2;
-  if (x % 2) {
-    buf[idx] = (buf[idx] & 0x0F) | (epd_color & 0xF0);
-  } else {
-    buf[idx] = (buf[idx] & 0xF0) | (epd_color >> 4);
-  }
+  buf[y * buf_w + x] = color.full;
 }
