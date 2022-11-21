@@ -78,7 +78,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
         printf("%x ", buf[index]);
     } */
 
-  clock_t time_1 = clock();
+  //   clock_t time_1 = clock();
   // UNCOMMENT only one of this options
   // SAFE Option with EPDiy copy of epd_copy_to_framebuffer
   buf_copy_to_framebuffer(update_area, buf);
@@ -88,12 +88,12 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
   epd_hl_update_area(&hl, updateMode, temperature, update_area);  //update_area
 
-  clock_t time_2 = clock();
-  ESP_LOGI("EDDIY",
-           "epdiy_flush %d x:%d y:%d w:%d h:%d; "
-           "use time: %ld ms; ",
-           flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h,
-           time_2 - time_1);
+  //   clock_t time_2 = clock();
+  //   ESP_LOGI("EDDIY",
+  //            "epdiy_flush %d x:%d y:%d w:%d h:%d; "
+  //            "use time: %ld ms; ",
+  //            flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h,
+  //            time_2 - time_1);
   /* Inform the graphics library that you are ready with the flushing */
   lv_disp_flush_ready(drv);
 }
