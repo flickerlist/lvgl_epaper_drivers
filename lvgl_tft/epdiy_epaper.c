@@ -2,10 +2,9 @@
 #include "epd_driver.h"
 #include "epd_highlevel.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "time.h"
+#include <time.h>
 
 EpdiyHighlevelState hl;
 uint16_t            flushcalls = 0;
@@ -13,88 +12,14 @@ uint8_t*            framebuffer;
 uint8_t             temperature = 25;
 bool                init        = true;
 // MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
-enum EpdDrawMode updateMode = MODE_GC16;
-
-// batch update recorder
-static uint8_t            batch_update_size   = 0;
-static EpdRect*           batch_update_areas  = NULL;
-static esp_timer_handle_t batch_timer_handler = NULL;
-static void               batch_timer_cb(void* arg);
-static void               batch_timer_start();
-static void               batch_add_to_list(EpdRect* update_area);
-static void               batch_flush(void* arg);
-
-static void batch_timer_cb(void* arg) {
-  batch_timer_handler = NULL;
-  batch_flush(NULL);
-}
-
-static void batch_timer_start() {
-  esp_timer_init();
-
-  if (batch_timer_handler != NULL) {
-    esp_timer_stop(batch_timer_handler);
-    esp_timer_delete(batch_timer_handler);
-    batch_timer_handler = NULL;
-  }
-  esp_timer_create_args_t args = {
-    .callback        = batch_timer_cb,
-    .arg             = NULL,
-    .dispatch_method = ESP_TIMER_TASK,
-    .name            = "batch_timer",
-  };
-  esp_timer_create(&args, &batch_timer_handler);
-  esp_timer_start_once(batch_timer_handler, 100e3);
-}
-
-// add to batch
-static void batch_add_to_list(EpdRect* update_area) {
-  size_t size_unit = sizeof(EpdRect);
-
-  EpdRect* new_update_areas =
-    heap_caps_malloc(size_unit * (batch_update_size + 1), MALLOC_CAP_SPIRAM);
-  if (batch_update_size > 0) {
-    memcpy(new_update_areas, batch_update_areas, batch_update_size * size_unit);
-  }
-  memcpy(new_update_areas + batch_update_size, update_area, size_unit);
-  if (batch_update_areas) {
-    heap_caps_free(batch_update_areas);
-  }
-  batch_update_size++;
-  batch_update_areas = new_update_areas;
-
-  batch_timer_start();
-}
-
-// batch flush
-static void batch_flush(void* arg) {
-  if (batch_update_size == 0) {
-    return;
-  }
-  clock_t time_1 = clock();
-  epd_poweron();
-  for (int8_t ind = 0; ind < batch_update_size; ind++) {
-    EpdRect* area = (batch_update_areas + ind);
-    epd_hl_update_area(&hl, updateMode, temperature, *area);
-  }
-  clock_t time_2 = clock();
-
-  heap_caps_free(batch_update_areas);
-  batch_update_areas = NULL;
-
-  //   ESP_LOGI("batch_flush", "batch_update_size: %d; flush time: %ld ms; ",
-  //            batch_update_size, time_2 - time_1);
-  batch_update_size = 0;
-
-  epd_poweroff();
-}
+enum EpdDrawMode updateMode = MODE_DU;
 
 /* Display initialization routine */
 void epdiy_init(void) {
   epd_init(EPD_OPTIONS_DEFAULT);
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
-  epd_poweroff();
+  epd_poweron();
   //Clear all always in init:
   epd_fullclear(&hl, temperature);
 }
@@ -112,25 +37,25 @@ void buf_area_to_framebuffer(const lv_area_t* area, const uint8_t* image_data) {
 }
 
 /* A copy from epd_copy_to_framebuffer with temporary lenght prediction */
-void buf_copy_to_framebuffer(EpdRect update_area, const uint8_t* buf) {
+void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
   assert(framebuffer != NULL);
 
-  for (uint32_t i = 0; i < update_area.width * update_area.height; i++) {
-    uint8_t val = buf[i];
-    int     x   = update_area.x + i % update_area.width;
-    int     y   = update_area.y + i / update_area.width;
-    if (x < 0 || x >= EPD_WIDTH) {
+  for (uint32_t i = 0; i < image_area.width * image_area.height; i++) {
+    uint8_t val =
+      (i % 2) ? (image_data[i / 2] & 0xF0) >> 4 : image_data[i / 2] & 0x0F;
+    int xx = image_area.x + i % image_area.width;
+    if (xx < 0 || xx >= EPD_WIDTH) {
       continue;
     }
-    if (y < 0 || y >= EPD_HEIGHT) {
+    int yy = image_area.y + i / image_area.width;
+    if (yy < 0 || yy >= EPD_HEIGHT) {
       continue;
     }
-    // use epd_draw_pixel will be slow
-    uint8_t* buf_ptr = &framebuffer[y * EPD_WIDTH / 2 + x / 2];
-    if (x % 2) {
-      *buf_ptr = (*buf_ptr & 0x0F) | (val & 0xF0);
+    uint8_t* buf_ptr = &framebuffer[yy * EPD_WIDTH / 2 + xx / 2];
+    if (xx % 2) {
+      *buf_ptr = (*buf_ptr & 0x0F) | (val << 4);
     } else {
-      *buf_ptr = (*buf_ptr & 0xF0) | (val >> 4);
+      *buf_ptr = (*buf_ptr & 0xF0) | val;
     }
   }
 }
@@ -143,11 +68,6 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   uint16_t w = lv_area_get_width(area);
   uint16_t h = lv_area_get_height(area);
 
-  //   ESP_LOGI("epd",
-  //            "flush start. count index: %d; "
-  //            "x:%d y:%d w:%d h:%d; ",
-  //            flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h);
-
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
 
@@ -158,22 +78,22 @@ void epdiy_flush(lv_disp_drv_t*   drv,
         printf("%x ", buf[index]);
     } */
 
+  clock_t time_1 = clock();
   // UNCOMMENT only one of this options
   // SAFE Option with EPDiy copy of epd_copy_to_framebuffer
-
-  clock_t time_1 = clock();
-
   buf_copy_to_framebuffer(update_area, buf);
 
-  clock_t time_2 = clock();
-
   //Faster mode suggested in LVGL forum (Leaves ghosting&prints bad sections / experimental) NOTE: Do NOT use in production
-  //buf_area_to_framebuffer(area, buf);
+  // buf_area_to_framebuffer(area, buf);
 
-  batch_add_to_list(&update_area);
+  epd_hl_update_area(&hl, updateMode, temperature, update_area);  //update_area
 
-  clock_t time_3 = clock();
-
+  clock_t time_2 = clock();
+  ESP_LOGI("EDDIY",
+           "epdiy_flush %d x:%d y:%d w:%d h:%d; "
+           "use time: %ld ms; ",
+           flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h,
+           time_2 - time_1);
   /* Inform the graphics library that you are ready with the flushing */
   lv_disp_flush_ready(drv);
 }
@@ -188,19 +108,11 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_coord_t     y,
                      lv_color_t     color,
                      lv_opa_t       opa) {
-  // Note: don't neet to call if use lv_color8_t
-
-  // Test using RGB332
-  int16_t epd_color = 255;
-  if ((int16_t)color.full < 250) {
-    epd_color = (updateMode == MODE_DU) ? 0 : (int16_t)color.full / 3;
-  }
-
   //Instead of using epd_draw_pixel: Set pixel directly in *buf that comes afterwards in flush as *color_map
-  uint16_t idx = (int16_t)y * buf_w / 2 + (int16_t)x / 2;
+  uint32_t idx = y * buf_w / 2 + x / 2;
   if (x % 2) {
-    buf[idx] = (buf[idx] & 0x0F) | (epd_color & 0xF0);
+    buf[idx] = (buf[idx] & 0x0F) | (color.full & 0xF0);
   } else {
-    buf[idx] = (buf[idx] & 0xF0) | (epd_color >> 4);
+    buf[idx] = (buf[idx] & 0xF0) | (color.full >> 4);
   }
 }
