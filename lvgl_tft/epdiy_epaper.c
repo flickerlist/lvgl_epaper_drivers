@@ -94,9 +94,10 @@ void epdiy_init(void) {
   epd_init(EPD_OPTIONS_DEFAULT);
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
-  epd_poweroff();
+  epd_poweron();
   //Clear all always in init:
   epd_fullclear(&hl, temperature);
+  epd_poweroff();
 }
 
 /* Suggested by @kisvegabor https://forum.lvgl.io/t/lvgl-port-to-be-used-with-epaper-displays/5630/26 */
