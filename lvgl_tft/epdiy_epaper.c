@@ -116,3 +116,19 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
     buf[idx] = (buf[idx] & 0xF0) | (color.full >> 4);
   }
 }
+
+// refresh screen
+void epdiy_fullclear() {
+  int fb_size = epd_rotated_display_width() * epd_rotated_display_height() / 2;
+  uint8_t* buffer = epd_hl_get_framebuffer(&hl);
+
+  void* copy_buffer = heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
+  memcpy(copy_buffer, buffer, fb_size);
+
+  epd_fullclear(&hl, temperature);
+
+  memcpy(buffer, copy_buffer, fb_size);
+  heap_caps_free(copy_buffer);
+
+  epd_hl_update_screen(&hl, updateMode, temperature);
+}
