@@ -116,12 +116,16 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_coord_t     y,
                      lv_color_t     color,
                      lv_opa_t       opa) {
+  uint8_t epd_color = color.full;
+  if (epd_color < 250 && updateMode == MODE_DU) {
+    epd_color = 0;
+  }
   //Instead of using epd_draw_pixel: Set pixel directly in *buf that comes afterwards in flush as *color_map
   uint32_t idx = y * buf_w / 2 + x / 2;
   if (x % 2) {
-    buf[idx] = (buf[idx] & 0x0F) | (color.full & 0xF0);
+    buf[idx] = (buf[idx] & 0x0F) | (epd_color & 0xF0);
   } else {
-    buf[idx] = (buf[idx] & 0xF0) | (color.full >> 4);
+    buf[idx] = (buf[idx] & 0xF0) | (epd_color >> 4);
   }
 }
 
