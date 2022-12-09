@@ -110,9 +110,21 @@ TPoint L58Touch::processTouch() {
     interrupt_trigger = 0;
 
     point     = scanPoint();
-    lastX     = point.x;
-    lastY     = point.y;
     lastEvent = point.event;
+
+    /**
+     * lastEvent=0 means released from TP
+     *
+     * L68 default return (0,0) when released, but this will case lvgl error, such as dropdown cannot get currect value: https://forum.lvgl.io/t/item-in-the-dropdown-list-is-not-selected/5381
+     *
+     */
+    if (lastEvent == 0 && !point.x && !point.y) {
+      point.x = lastX;
+      point.y = lastY;
+    } else {
+      lastX = point.x;
+      lastY = point.y;
+    }
   }
 
   return point;
