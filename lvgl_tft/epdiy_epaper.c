@@ -9,13 +9,16 @@
 EpdiyHighlevelState hl;
 uint16_t            flushcalls = 0;
 uint8_t*            framebuffer;
-uint8_t             temperature = 25;
-bool                init        = true;
+uint8_t             temperature       = 25;
+const int           _clear_cycle_time = 12;
 // MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
 enum EpdDrawMode updateMode = MODE_DU;
 
 // Used for full clean temply
 uint8_t* fullclear_buffer = NULL;
+
+// replace `epd_fullclear` to faster render
+static void epdiy_clear_screen(bool reset_color, int32_t cycle_times);
 
 /* Display initialization routine */
 void epdiy_init(void) {
@@ -23,8 +26,9 @@ void epdiy_init(void) {
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
   epd_poweron();
-  //Clear all always in init:
-  epd_fullclear(&hl, temperature);
+
+  //   Clear all always in init:
+  epdiy_clear_screen(false, 2);
 }
 
 /* Suggested by @kisvegabor https://forum.lvgl.io/t/lvgl-port-to-be-used-with-epaper-displays/5630/26 */
@@ -93,9 +97,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
   //Faster mode suggested in LVGL forum (Leaves ghosting&prints bad sections / experimental) NOTE: Do NOT use in production
   // buf_area_to_framebuffer(area, buf);
-  //   epd_poweron();
   epd_hl_update_area(&hl, updateMode, temperature, update_area);  //update_area
-  //   epd_poweroff();
 
   //   clock_t time_2 = clock();
   //   ESP_LOGI("EDDIY",
@@ -140,15 +142,20 @@ void epdiy_fullclear() {
   fullclear_buffer = heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
   memcpy(fullclear_buffer, buffer, fb_size);
 
-  //   epd_poweron();
-  epd_fullclear(&hl, temperature);
-  //   epd_poweroff();
+  epdiy_clear_screen(true, 1);
 
   memcpy(buffer, fullclear_buffer, fb_size);
   heap_caps_free(fullclear_buffer);
   fullclear_buffer = NULL;
 
-  //   epd_poweron();
   epd_hl_update_screen(&hl, updateMode, temperature);
-  //   epd_poweroff();
+}
+
+// replace `epd_fullclear` to faster render
+static void epdiy_clear_screen(bool reset_color, int32_t cycle_times) {
+  if (reset_color) {
+    epd_hl_set_all_white(&hl);
+    epd_hl_update_screen(&hl, updateMode, temperature);
+  }
+  epd_clear_area_cycles(epd_full_screen(), cycle_times, _clear_cycle_time);
 }
