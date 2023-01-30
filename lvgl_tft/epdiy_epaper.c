@@ -25,10 +25,11 @@ void epdiy_init(void) {
   epd_init(EPD_OPTIONS_DEFAULT);
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
-  epd_poweron();
 
   //   Clear all always in init:
+  epd_poweron();
   epdiy_clear_screen(false, 2);
+  epd_poweroff();
 }
 
 /* Suggested by @kisvegabor https://forum.lvgl.io/t/lvgl-port-to-be-used-with-epaper-displays/5630/26 */
@@ -97,7 +98,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
   //Faster mode suggested in LVGL forum (Leaves ghosting&prints bad sections / experimental) NOTE: Do NOT use in production
   // buf_area_to_framebuffer(area, buf);
+  epd_poweron();
   epd_hl_update_area(&hl, updateMode, temperature, update_area);  //update_area
+  if (!fullclear_buffer) {
+    epd_poweroff();
+  }
 
   //   clock_t time_2 = clock();
   //   ESP_LOGI("EDDIY",
@@ -142,6 +147,7 @@ void epdiy_fullclear() {
   fullclear_buffer = heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
   memcpy(fullclear_buffer, buffer, fb_size);
 
+  epd_poweron();
   epdiy_clear_screen(true, 1);
 
   memcpy(buffer, fullclear_buffer, fb_size);
@@ -149,6 +155,7 @@ void epdiy_fullclear() {
   fullclear_buffer = NULL;
 
   epd_hl_update_screen(&hl, updateMode, temperature);
+  epd_poweroff();
 }
 
 // replace `epd_fullclear` to faster render
