@@ -17,6 +17,8 @@ extern "C" {
 #endif
 #include "sdkconfig.h"
 
+#include "epd_driver.h"
+
 /* Configure your display */
 void epdiy_init(void);
 
@@ -34,8 +36,11 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_color_t     color,
                      lv_opa_t       opa);
 
-// refresh screen
-void epdiy_fullclear();
+/* refresh all screen */
+void epdiy_repaint_all();
+
+/* refresh area */
+void epdiy_repaint(EpdRect area);
 
 #ifdef __cplusplus
 } /* extern "C" */
