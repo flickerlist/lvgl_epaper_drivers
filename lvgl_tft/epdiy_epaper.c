@@ -14,6 +14,8 @@ const int           _clear_cycle_time = 12;
 // MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
 enum EpdDrawMode updateMode = MODE_DU;
 
+need_repaint_cb _need_repaint_cb;
+
 /* Display initialization routine */
 void epdiy_init(void) {
   epd_init(EPD_OPTIONS_DEFAULT);
@@ -84,19 +86,24 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   // UNCOMMENT only one of this options
   // SAFE Option with EPDiy copy of epd_copy_to_framebuffer
   buf_copy_to_framebuffer(update_area, buf);
-
-  //Faster mode suggested in LVGL forum (Leaves ghosting&prints bad sections / experimental) NOTE: Do NOT use in production
   // buf_area_to_framebuffer(area, buf);
-  epd_poweron();
-  epd_hl_update_area(&hl, updateMode, temperature, update_area);  //update_area
-  epd_poweroff();
+
+  bool need_repaint =
+    _need_repaint_cb ? _need_repaint_cb(&update_area, flushcalls) : false;
+
+  if (need_repaint) {
+    epdiy_repaint(update_area);
+  } else {
+    epd_poweron();
+    epd_hl_update_area(&hl, updateMode, temperature, update_area);
+    epd_poweroff();
+  }
 
   //   clock_t time_2 = clock();
   //   ESP_LOGI("EDDIY",
-  //            "epdiy_flush %d x:%d y:%d w:%d h:%d; "
+  //            "epdiy_flush. x:%d y:%d w:%d h:%d; "
   //            "use time: %ld ms; ",
-  //            flushcalls, (uint16_t)area->x1, (uint16_t)area->y1, w, h,
-  //            time_2 - time_1);
+  //            (uint16_t)area->x1, (uint16_t)area->y1, w, h, time_2 - time_1);
   /* Inform the graphics library that you are ready with the flushing */
   lv_disp_flush_ready(drv);
 }
@@ -126,6 +133,10 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
   }
 }
 
+void epdiy_set_need_repaint_cb(need_repaint_cb cb) {
+  _need_repaint_cb = cb;
+}
+
 /* refresh all screen */
 void epdiy_repaint_all() {
   epdiy_repaint(epd_full_screen());
@@ -134,7 +145,7 @@ void epdiy_repaint_all() {
 /* refresh area */
 void epdiy_repaint(EpdRect area) {
   epd_poweron();
-  epd_clear_area_cycles(epd_full_screen(), 1, _clear_cycle_time);
-  epd_hl_update_area_directly(&hl, updateMode, temperature, epd_full_screen());
+  epd_clear_area_cycles(area, 1, _clear_cycle_time);
+  epd_hl_update_area_directly(&hl, updateMode, temperature, area);
   epd_poweroff();
 }

@@ -36,6 +36,12 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_color_t     color,
                      lv_opa_t       opa);
 
+/**
+ * @brief To determine if the paint need repaint
+ */
+typedef bool (*need_repaint_cb)(EpdRect* area, int flush_count);
+void epdiy_set_need_repaint_cb(need_repaint_cb cb);
+
 /* refresh all screen */
 void epdiy_repaint_all();
 
