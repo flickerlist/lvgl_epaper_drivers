@@ -25,7 +25,7 @@
 #  define ACK_VAL 0x0 /*!< I2C ack value */
 #  define NACK_VAL 0x1 /*!< I2C nack value */
 
-#  define L58_ADDR 0x5A
+#  define L58_ADDR 0x1A
 
 // Note: We still could not read proper events, so we simulate Tap
 enum class TEvent { None, TouchStart, TouchMove, TouchEnd, Tap };
