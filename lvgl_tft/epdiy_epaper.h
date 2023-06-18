@@ -37,7 +37,14 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_opa_t       opa);
 
 /**
- * @brief To determine if the paint need repaint
+ * @brief To determine if the change need to flush this time
+ *
+ */
+typedef bool (*need_flush_cb)(EpdRect* area, int flush_count);
+void epdiy_set_need_flush_cb(need_flush_cb cb);
+
+/**
+ * @brief To determine if the paint need repaint this time
  */
 typedef bool (*need_repaint_cb)(EpdRect* area, int flush_count);
 void epdiy_set_need_repaint_cb(need_repaint_cb cb);

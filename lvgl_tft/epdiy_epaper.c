@@ -14,6 +14,7 @@ const int           _clear_cycle_time = 12;
 // MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
 enum EpdDrawMode updateMode = MODE_DU;
 
+need_flush_cb   _need_flush_cb;
 need_repaint_cb _need_repaint_cb;
 
 /* Display initialization routine */
@@ -75,6 +76,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
 
+  if (_need_flush_cb && !_need_flush_cb(&update_area, flushcalls)) {
+    lv_disp_flush_ready(drv);
+    return;
+  }
+
   uint8_t* buf = (uint8_t*)color_map;
   // Buffer debug
   /*
@@ -131,6 +137,10 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
   } else {
     buf[idx] = (buf[idx] & 0xF0) | (epd_color >> 4);
   }
+}
+
+void epdiy_set_need_flush_cb(need_flush_cb cb) {
+  _need_flush_cb = cb;
 }
 
 void epdiy_set_need_repaint_cb(need_repaint_cb cb) {
