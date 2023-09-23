@@ -2,6 +2,7 @@
 #include "epd_driver.h"
 #include "epd_highlevel.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <time.h>
@@ -17,16 +18,31 @@ enum EpdDrawMode updateMode = MODE_DU;
 need_flush_cb   _need_flush_cb;
 need_repaint_cb _need_repaint_cb;
 
+#if CONFIG_PM_ENABLE
+static esp_pm_lock_handle_t epdiy_pm_lock;
+#endif  // CONFIG_PM_ENABLE
+
 /* Display initialization routine */
 void epdiy_init(void) {
   epd_init(EPD_OPTIONS_DEFAULT);
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
 
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "epdiy_pm_lock",
+                                     &epdiy_pm_lock));
+
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
   //   Clear all always in init:
   epd_poweron();
   epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
   epd_poweroff();
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
 }
 
 /* Suggested by @kisvegabor https://forum.lvgl.io/t/lvgl-port-to-be-used-with-epaper-displays/5630/26 */
@@ -97,6 +113,10 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   bool need_repaint =
     _need_repaint_cb ? _need_repaint_cb(&update_area, flushcalls) : false;
 
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
   if (need_repaint) {
     epdiy_repaint(update_area);
   } else {
@@ -112,6 +132,10 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   //            (uint16_t)area->x1, (uint16_t)area->y1, w, h, time_2 - time_1);
   /* Inform the graphics library that you are ready with the flushing */
   lv_disp_flush_ready(drv);
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
 }
 
 /*
