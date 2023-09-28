@@ -317,7 +317,7 @@ void L58Touch::readBytes(uint8_t* data, int len) {
     // Getting a lot of this!
     //ESP_LOGW(TAG, "Bus is busy");
   } else {
-    ESP_LOGW(TAG, "Read failed");
+    ESP_LOGW(TAG, "Read failed: %d", (int)ret);
   }
 }
 
