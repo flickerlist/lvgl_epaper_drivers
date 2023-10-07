@@ -52,6 +52,8 @@ class L58Touch {
   L58Touch(int8_t intPin);
   ~L58Touch();
 
+  static L58Touch* instance();
+
   // handler when the intPin interrupted, can only do very little, and `can't call log`.
   static void registerTouchInterruptHandler(TouchInterruptHandler* fn);
 

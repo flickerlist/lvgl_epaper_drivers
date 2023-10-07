@@ -59,6 +59,10 @@ L58Touch::L58Touch(int8_t intPin) {
 // Destructor does nothing for now
 L58Touch::~L58Touch() {}
 
+L58Touch* L58Touch::instance() {
+  return _instance;
+}
+
 bool L58Touch::begin(uint16_t width, uint16_t height) {
   _touch_width  = width;
   _touch_height = height;
