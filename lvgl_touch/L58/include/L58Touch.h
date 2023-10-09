@@ -7,6 +7,7 @@
 //#include <cstdlib>
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "esp_err.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -85,14 +86,14 @@ class L58Touch {
   uint16_t tapDetectionMillisDiff = 100;
 
  private:
-  TPoint  scanPoint();
-  void    writeRegister8(uint8_t reg, uint8_t val);
-  void    writeData(uint8_t* data, int len);
-  void    readBytes(uint8_t* data, int len);
-  uint8_t readRegister8(uint8_t reg, uint8_t* data_buf);
-  void    fireEvent(TPoint point, TEvent e);
-  uint8_t read8(uint8_t regName);
-  void    clearFlags();
+  TPoint    scanPoint();
+  void      writeRegister8(uint8_t reg, uint8_t val);
+  esp_err_t writeData(uint8_t* data, int len);
+  void      readBytes(uint8_t* data, int len);
+  uint8_t   readRegister8(uint8_t reg, uint8_t* data_buf);
+  void      fireEvent(TPoint point, TEvent e);
+  uint8_t   read8(uint8_t regName);
+  void      clearFlags();
 
   static L58Touch* _instance;
   uint8_t          _intPin;

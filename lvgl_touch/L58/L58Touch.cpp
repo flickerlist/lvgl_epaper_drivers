@@ -6,7 +6,7 @@
 #define CONFIG_L58_DEBUG 0
 
 L58Touch*          L58Touch::_instance = nullptr;
-static const char* TAG                 = "i2c-touch";
+static const char* TAG                 = "L58Touch";
 
 /**
  * Record the interrupt of intPin.
@@ -260,14 +260,17 @@ void L58Touch::writeRegister8(uint8_t reg, uint8_t value) {
   i2c_cmd_link_delete(cmd);
 }
 
-void L58Touch::writeData(uint8_t* data, int len) {
+esp_err_t L58Touch::writeData(uint8_t* data, int len) {
   if (len == 0)
-    return;
+    return ESP_FAIL;
   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
   i2c_master_start(cmd);
+  i2c_master_write_byte(cmd, L58_ADDR << 1 | I2C_MASTER_WRITE, ACK_CHECK_EN);
   i2c_master_write(cmd, data, len, ACK_CHECK_EN);
   i2c_master_stop(cmd);
+  auto res = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_RATE_MS);
   i2c_cmd_link_delete(cmd);
+  return res;
 }
 
 uint8_t L58Touch::readRegister8(uint8_t reg, uint8_t* data_buf) {
@@ -319,7 +322,7 @@ void L58Touch::readBytes(uint8_t* data, int len) {
     }
   } else if (ret == ESP_ERR_TIMEOUT) {
     // Getting a lot of this!
-    //ESP_LOGW(TAG, "Bus is busy");
+    // ESP_LOGW(TAG, "Bus is busy");
   } else {
     ESP_LOGW(TAG, "Read failed: %d", (int)ret);
   }
@@ -351,5 +354,19 @@ void L58Touch::clearFlags() {
 
 void L58Touch::sleep() {
   uint8_t buf[2] = {0xD1, 0X05};
-  writeData(buf, sizeof(buf));
+
+  int32_t   try_count = 0;
+  esp_err_t res;
+  while (true) {
+    try_count++;
+    res = writeData(buf, sizeof(buf));
+    if (res == ESP_OK) {
+      break;
+    }
+    if (try_count >= 10) {
+      break;
+    }
+    vTaskDelay(100 / portTICK_RATE_MS);
+  }
+  ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
 }
