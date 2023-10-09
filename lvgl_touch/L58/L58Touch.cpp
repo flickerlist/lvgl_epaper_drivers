@@ -366,7 +366,7 @@ void L58Touch::sleep() {
     if (try_count >= 10) {
       break;
     }
-    vTaskDelay(100 / portTICK_RATE_MS);
+    vTaskDelay(300 / portTICK_RATE_MS);
   }
   ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
 }
