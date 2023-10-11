@@ -84,8 +84,6 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
   // INT gpio interrupt handler
   gpio_isr_handler_add((gpio_num_t)CONFIG_LV_TOUCH_INT, gpio_isr_handler, NULL);
 
-  uint8_t buf[2] = {0xD1, 0X06};
-  writeData(buf, sizeof(buf));
   return true;
 }
 
@@ -256,7 +254,7 @@ void L58Touch::writeRegister8(uint8_t reg, uint8_t value) {
   i2c_master_write_byte(cmd, reg, ACK_CHECK_EN);
   i2c_master_write_byte(cmd, value, ACK_CHECK_EN);
   i2c_master_stop(cmd);
-  i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_RATE_MS);
+  i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(1000));
   i2c_cmd_link_delete(cmd);
 }
 
@@ -268,7 +266,7 @@ esp_err_t L58Touch::writeData(uint8_t* data, int len) {
   i2c_master_write_byte(cmd, L58_ADDR << 1 | I2C_MASTER_WRITE, ACK_CHECK_EN);
   i2c_master_write(cmd, data, len, ACK_CHECK_EN);
   i2c_master_stop(cmd);
-  auto res = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_RATE_MS);
+  auto res = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(1000));
   i2c_cmd_link_delete(cmd);
   return res;
 }
@@ -284,7 +282,7 @@ uint8_t L58Touch::readRegister8(uint8_t reg, uint8_t* data_buf) {
 
   i2c_master_read_byte(cmd, data_buf, I2C_MASTER_NACK);
   i2c_master_stop(cmd);
-  esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_RATE_MS);
+  esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(1000));
   i2c_cmd_link_delete(cmd);
 
 #if defined(CONFIG_L58_DEBUG) && CONFIG_L58_DEBUG == 1
@@ -307,7 +305,7 @@ void L58Touch::readBytes(uint8_t* data, int len) {
   i2c_master_write_byte(cmd, L58_ADDR << 1 | I2C_MASTER_READ, ACK_CHECK_EN);
   i2c_master_read(cmd, data, len, (i2c_ack_type_t)ACK_VAL);
   i2c_master_stop(cmd);
-  esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_RATE_MS);
+  esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(1000));
   i2c_cmd_link_delete(cmd);
 
   if (ret == ESP_OK) {
@@ -366,7 +364,7 @@ void L58Touch::sleep() {
     if (try_count >= 10) {
       break;
     }
-    vTaskDelay(300 / portTICK_RATE_MS);
+    vTaskDelay(pdMS_TO_TICKS(300));
   }
   ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
 }
