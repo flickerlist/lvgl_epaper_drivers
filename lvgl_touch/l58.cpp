@@ -43,6 +43,7 @@ void l58_init() {
   int height = epd_rotated_display_height();
   ESP_LOGI(TAG, "l58_init() Touch initialized: width: %d; height: %d.", width,
            height);
+  Touch.setRotation(3);
   Touch.begin(width, height);
 }
 

@@ -139,98 +139,24 @@ uint8_t L58Touch::read8(uint8_t regName) {
 }
 
 TPoint L58Touch::scanPoint() {
-  TPoint   point{0, 0, 0};
-  uint8_t  pointIdx   = 0;
-  uint8_t  buffer[40] = {0};
-  uint32_t sumL = 0, sumH = 0;
+  TPoint  point{0, 0, 0};
+  uint8_t pointIdx = 0;
+  uint8_t buf[7]   = {0};
 
-  buffer[0] = 0xD0;
-  buffer[1] = 0x00;
-  readBytes(buffer, 7);
-
-  if (buffer[0] == 0xAB) {
-    clearFlags();
-    return point;
-  }
-
-  pointIdx = buffer[5] & 0xF;
-
-  if (pointIdx == 1) {
-    buffer[5] = 0xD0;
-    buffer[6] = 0x07;
-    readBytes(&buffer[5], 2);
-    sumL = buffer[5] << 8 | buffer[6];
-
-  } else if (pointIdx > 1) {
-    buffer[5] = 0xD0;
-    buffer[6] = 0x07;
-    readBytes(&buffer[5], 5 * (pointIdx - 1) + 3);
-    sumL = buffer[5 * pointIdx + 1] << 8 | buffer[5 * pointIdx + 2];
-  }
-  clearFlags();
-
-  for (int i = 0; i < 5 * pointIdx; ++i) {
-    sumH += buffer[i];
-  }
-
-  if (sumH != sumL) {
-    pointIdx = 0;
-  }
-  if (pointIdx) {
-    uint8_t offset;
-    for (int i = 0; i < pointIdx; ++i) {
-      if (i == 0) {
-        offset = 0;
-      } else {
-        offset = 4;
-      }
-      data[i].id    = (buffer[i * 5 + offset] >> 4) & 0x0F;
-      data[i].event = buffer[i * 5 + offset] & 0x0F;
-      data[i].y     = (uint16_t)((buffer[i * 5 + 1 + offset] << 4) |
-                             ((buffer[i * 5 + 3 + offset] >> 4) & 0x0F));
-      data[i].x     = (uint16_t)((buffer[i * 5 + 2 + offset] << 4) |
-                             (buffer[i * 5 + 3 + offset] & 0x0F));
-
-      //printf("X[%d]:%d Y:%d E:%d\n", i, data[i].x, data[i].y, data[i].event);
-    }
-
-  } else {
-    // Only this one seems to be working (even pressing with 2 fingers)
-    pointIdx      = 1;
-    data[0].id    = (buffer[0] >> 4) & 0x0F;
-    data[0].event = (buffer[0] & 0x0F) >> 1;
-    data[0].y =
-      (uint16_t)((buffer[0 * 5 + 1] << 4) | ((buffer[0 * 5 + 3] >> 4) & 0x0F));
-    data[0].x =
-      (uint16_t)((buffer[0 * 5 + 2] << 4) | (buffer[0 * 5 + 3] & 0x0F));
-    if (data[0].event == 3) { /** Press */
-      _touchStartTime = esp_timer_get_time() / 1000;
-    }
-    if (data[0].event == 0) { /** Lift up */
-      _touchEndTime = esp_timer_get_time() / 1000;
-    }
-
-#if defined(CONFIG_L58_DEBUG) && CONFIG_L58_DEBUG == 1
-    printf("X:%d Y:%d E:%d\n", data[0].x, data[0].y, data[0].event);
-#endif
-  }
-
-  uint16_t x = data[0].x;
-  uint16_t y = data[0].y;
-
-  // Had some hope that state was event, but always come:
-  // id:1 st:6
-  // printf("id:%d st:%d\n", data[0].id, data[0].state);
+  buf[0] = 0xD0;
+  buf[1] = 0x00;
+  readBytes(buf, 7);
+  uint16_t x     = (uint16_t)((buf[1] << 4) | ((buf[3] >> 4) & 0x0F));
+  uint16_t y     = (uint16_t)((buf[2] << 4) | (buf[3] & 0x0F));
+  uint8_t  event = (buf[0] & 0x0F) >> 1;
   // TODO: rotation need test for values: 1,2,3
   switch (_rotation) {
     // 0- no rotation: Works OK inverting Y axis
     case 0:
-      // y = _touch_height - y;
       break;
 
     case 1:
       swap(x, y);
-      // y = _touch_width - y;
       x = _touch_height - x;
       break;
 
@@ -243,7 +169,7 @@ TPoint L58Touch::scanPoint() {
       break;
   }
 
-  point = {x, y, data[0].event};
+  point = {x, y, event};
   return point;
 }
 
@@ -292,9 +218,7 @@ uint8_t L58Touch::readRegister8(uint8_t reg, uint8_t* data_buf) {
   return ret;
 }
 
-void L58Touch::readBytes(uint8_t* data, int len) {
-  if (len == 0)
-    return;
+esp_err_t L58Touch::readBytes(uint8_t* data, int len) {
   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, L58_ADDR << 1 | I2C_MASTER_WRITE, ACK_CHECK_EN);
@@ -309,6 +233,7 @@ void L58Touch::readBytes(uint8_t* data, int len) {
   i2c_cmd_link_delete(cmd);
 
   if (ret == ESP_OK) {
+    // ESP_LOGW(TAG, "Read OK");
     for (int i = 0; i < len; i++) {
       printf("0x%02x ", data[i]);
       if ((i + 1) % 16 == 0) {
@@ -319,11 +244,12 @@ void L58Touch::readBytes(uint8_t* data, int len) {
       printf("\r\n");
     }
   } else if (ret == ESP_ERR_TIMEOUT) {
-    // Getting a lot of this!
+    // Getting a lot of this!, but data may usable even `ESP_ERR_TIMEOUT`
     // ESP_LOGW(TAG, "Bus is busy");
   } else {
     ESP_LOGW(TAG, "Read failed: %d", (int)ret);
   }
+  return ret;
 }
 
 void L58Touch::fireEvent(TPoint point, TEvent e) {

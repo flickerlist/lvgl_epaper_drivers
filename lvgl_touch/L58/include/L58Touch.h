@@ -78,7 +78,7 @@ class L58Touch {
     b   = t;
   }
 
-  void (*_touchHandler)(TPoint point, TEvent e) = nullptr;
+  void        (*_touchHandler)(TPoint point, TEvent e) = nullptr;
   TouchData_t data[5];
   // Tap detection is enabled by default
   bool tapDetectionEnabled = true;
@@ -89,7 +89,7 @@ class L58Touch {
   TPoint    scanPoint();
   void      writeRegister8(uint8_t reg, uint8_t val);
   esp_err_t writeData(uint8_t* data, int len);
-  void      readBytes(uint8_t* data, int len);
+  esp_err_t readBytes(uint8_t* data, int len);
   uint8_t   readRegister8(uint8_t reg, uint8_t* data_buf);
   void      fireEvent(TPoint point, TEvent e);
   uint8_t   read8(uint8_t regName);
@@ -110,7 +110,7 @@ class L58Touch {
   uint8_t       _pointIdx       = 0;
   unsigned long _touchStartTime = 0;
   unsigned long _touchEndTime   = 0;
-  uint8_t       lastEvent       = 3;  // No event
+  uint8_t       lastEvent       = 0;
   uint16_t      lastX           = 0;
   uint16_t      lastY           = 0;
   bool          _dragMode       = false;
