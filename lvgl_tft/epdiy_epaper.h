@@ -37,17 +37,15 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_opa_t       opa);
 
 /**
- * @brief To determine if the change need to flush this time
- *
+ * @brief To determine the type for this paint
  */
-typedef bool (*need_flush_cb)(EpdRect* area, int flush_count);
-void epdiy_set_need_flush_cb(need_flush_cb cb);
-
-/**
- * @brief To determine if the paint need repaint this time
- */
-typedef bool (*need_repaint_cb)(EpdRect* area, int flush_count);
-void epdiy_set_need_repaint_cb(need_repaint_cb cb);
+typedef int lvgl_epdiy_flush_type_t;
+#define EPDIY_PARTIAL_PAINT 0
+#define EPDIY_REPAINT_ALL 1
+#define EPDIY_NO_PAINT 2
+typedef lvgl_epdiy_flush_type_t (*epdiy_flush_type_cb_t)(EpdRect* area,
+                                                         int      flush_count);
+void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb);
 
 /* refresh all screen */
 void epdiy_repaint_all();

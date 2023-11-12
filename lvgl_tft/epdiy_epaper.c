@@ -15,8 +15,7 @@ const int           _clear_cycle_time = 12;
 // MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
 enum EpdDrawMode updateMode = MODE_DU;
 
-need_flush_cb   _need_flush_cb;
-need_repaint_cb _need_repaint_cb;
+epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;
@@ -92,17 +91,15 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
 
-  if (_need_flush_cb && !_need_flush_cb(&update_area, flushcalls)) {
+  lvgl_epdiy_flush_type_t _paint_type =
+    _epdiy_flush_type_cb ? _epdiy_flush_type_cb(&update_area, flushcalls) :
+                           EPDIY_PARTIAL_PAINT;
+  if (_paint_type == EPDIY_NO_PAINT) {
     lv_disp_flush_ready(drv);
     return;
   }
 
   uint8_t* buf = (uint8_t*)color_map;
-  // Buffer debug
-  /*
-    for (int index=0; index<400; index++) {
-        printf("%x ", buf[index]);
-    } */
 
   //   clock_t time_1 = clock();
   // UNCOMMENT only one of this options
@@ -110,14 +107,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   buf_copy_to_framebuffer(update_area, buf);
   // buf_area_to_framebuffer(area, buf);
 
-  bool need_repaint =
-    _need_repaint_cb ? _need_repaint_cb(&update_area, flushcalls) : false;
-
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
 #endif  // CONFIG_PM_ENABLE
 
-  if (need_repaint) {
+  if (_paint_type == EPDIY_REPAINT_ALL) {
     epdiy_repaint(update_area);
   } else {
     epd_poweron();
@@ -163,12 +157,8 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
   }
 }
 
-void epdiy_set_need_flush_cb(need_flush_cb cb) {
-  _need_flush_cb = cb;
-}
-
-void epdiy_set_need_repaint_cb(need_repaint_cb cb) {
-  _need_repaint_cb = cb;
+void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
+  _epdiy_flush_type_cb = cb;
 }
 
 /* refresh all screen */
