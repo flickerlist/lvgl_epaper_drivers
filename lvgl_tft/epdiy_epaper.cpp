@@ -6,6 +6,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <time.h>
+#include <vector>
+
+using namespace std;
 
 EpdiyHighlevelState hl;
 uint16_t            flushcalls = 0;
@@ -16,10 +19,24 @@ const int           _clear_cycle_time = 12;
 enum EpdDrawMode updateMode = MODE_DU;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
+TaskHandle_t          _paint_task_handle;
+void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data);
+void paint_task_cb(void* arg);
+
+typedef struct _paint_t {
+  lvgl_epdiy_flush_type_t paint_type;
+  EpdRect                 area;
+  lv_color_t*             color_map;
+  lv_disp_drv_t*          drv;
+} paint_t;
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;
 #endif  // CONFIG_PM_ENABLE
+
+// Fist flush `paint queue 1`, then flush `paint queue 2`
+vector<paint_t> paint_queue_1;
+vector<paint_t> paint_queue_2;
 
 /* Display initialization routine */
 void epdiy_init(void) {
@@ -38,6 +55,9 @@ void epdiy_init(void) {
   epd_poweron();
   epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
   epd_poweroff();
+
+  xTaskCreatePinnedToCore(&paint_task_cb, "paint_cb", 1024 * 4, NULL, 5,
+                          &_paint_task_handle, 1);
 
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
@@ -99,37 +119,19 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     return;
   }
 
-  uint8_t* buf = (uint8_t*)color_map;
-
-  //   clock_t time_1 = clock();
-  // UNCOMMENT only one of this options
-  // SAFE Option with EPDiy copy of epd_copy_to_framebuffer
-  buf_copy_to_framebuffer(update_area, buf);
-  // buf_area_to_framebuffer(area, buf);
-
-#if CONFIG_PM_ENABLE
-  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
-#endif  // CONFIG_PM_ENABLE
-
-  if (_paint_type == EPDIY_REPAINT_ALL) {
-    epdiy_repaint(update_area);
-  } else {
-    epd_poweron();
-    epd_hl_update_area(&hl, updateMode, temperature, update_area);
-    epd_poweroff();
-  }
-
-  //   clock_t time_2 = clock();
-  //   ESP_LOGI("EDDIY",
-  //            "epdiy_flush. x:%d y:%d w:%d h:%d; "
-  //            "use time: %ld ms; ",
-  //            (uint16_t)area->x1, (uint16_t)area->y1, w, h, time_2 - time_1);
-  /* Inform the graphics library that you are ready with the flushing */
-  lv_disp_flush_ready(drv);
-
-#if CONFIG_PM_ENABLE
-  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
-#endif  // CONFIG_PM_ENABLE
+  paint_t ptr;
+  ptr.paint_type = _paint_type;
+  ptr.area       = update_area;
+  ptr.color_map  = color_map;
+  ptr.drv        = drv;
+  paint_queue_1.push_back(ptr);
+  paint_queue_2.push_back(ptr);
+  vTaskResume(_paint_task_handle);
+  /**
+   * If `paint_cb` is suspending, `vTaskResume` may called between `check size()` and `vTaskSuspend`, this will make the `epdiy_flush`(the whole device) never be reacted, really dangerous, so add a delay and recall `vTaskResume` to avoid this
+   */
+  vTaskDelay(pdMS_TO_TICKS(5));
+  vTaskResume(_paint_task_handle);
 }
 
 /*
@@ -159,6 +161,55 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
 
 void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
   _epdiy_flush_type_cb = cb;
+}
+
+// This will be faster than create a task for each paint
+void paint_task_cb(void* arg) {
+  while (true) {
+    if (paint_queue_1.size() > 0) {
+      auto first = paint_queue_1.begin();
+      /**
+       * buf_copy_to_framebuffer must be called in same thread with `epd_hl_update_area`, or will cause paint buffer wrong data
+       */
+      uint8_t* buf = (uint8_t*)first->color_map;
+      buf_copy_to_framebuffer(first->area, buf);
+      /**
+     * This seems will destroy `color_map`, so call after used `color_map`
+     * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
+     */
+      lv_disp_flush_ready(first->drv);
+      // Must after used, or will change `first` to the second item
+      paint_queue_1.erase(paint_queue_1.begin());
+      // Wait to collect for `queue 1`, avoid to run `queue 2` too fast
+      vTaskDelay(pdMS_TO_TICKS(5));
+    } else if (paint_queue_2.size() > 0) {
+      auto first = paint_queue_2.begin();
+
+#if CONFIG_PM_ENABLE
+      ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
+      if (first->paint_type == EPDIY_REPAINT_ALL) {
+        epdiy_repaint(first->area);
+      } else {
+        epd_poweron();
+        epd_hl_update_area(&hl, updateMode, temperature, first->area);
+        epd_poweroff();
+      }
+
+#if CONFIG_PM_ENABLE
+      ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
+      paint_queue_2.erase(paint_queue_2.begin());
+
+      // Wait to collect for `queue 2`, avoid to run `vTaskSuspend` too fast
+      vTaskDelay(pdMS_TO_TICKS(5));
+    } else {
+      vTaskSuspend(_paint_task_handle);
+    }
+  }
+  vTaskDelete(_paint_task_handle);
 }
 
 /* refresh all screen */
