@@ -126,11 +126,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   ptr.drv        = drv;
   paint_queue_1.push_back(ptr);
   paint_queue_2.push_back(ptr);
-  vTaskResume(_paint_task_handle);
-  /**
-   * If `paint_cb` is suspending, `vTaskResume` may called between `check size()` and `vTaskSuspend`, this will make the `epdiy_flush`(the whole device) never be reacted, really dangerous, so add a delay and recall `vTaskResume` to avoid this
-   */
-  vTaskDelay(pdMS_TO_TICKS(5));
+  vTaskDelay(pdMS_TO_TICKS(1));
   vTaskResume(_paint_task_handle);
 }
 
@@ -163,11 +159,13 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
   _epdiy_flush_type_cb = cb;
 }
 
+int _paint_empty_record = 0;
 // This will be faster than create a task for each paint
 void paint_task_cb(void* arg) {
   while (true) {
     if (paint_queue_1.size() > 0) {
-      auto first = paint_queue_1.begin();
+      _paint_empty_record = 0;
+      auto first          = paint_queue_1.begin();
       /**
        * buf_copy_to_framebuffer must be called in same thread with `epd_hl_update_area`, or will cause paint buffer wrong data
        */
@@ -180,10 +178,12 @@ void paint_task_cb(void* arg) {
       lv_disp_flush_ready(first->drv);
       // Must after used, or will change `first` to the second item
       paint_queue_1.erase(paint_queue_1.begin());
+
       // Wait to collect for `queue 1`, avoid to run `queue 2` too fast
-      vTaskDelay(pdMS_TO_TICKS(5));
+      // vTaskDelay(pdMS_TO_TICKS(2));
     } else if (paint_queue_2.size() > 0) {
-      auto first = paint_queue_2.begin();
+      _paint_empty_record = 0;
+      auto first          = paint_queue_2.begin();
 
 #if CONFIG_PM_ENABLE
       ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
@@ -202,11 +202,16 @@ void paint_task_cb(void* arg) {
 #endif  // CONFIG_PM_ENABLE
 
       paint_queue_2.erase(paint_queue_2.begin());
-
-      // Wait to collect for `queue 2`, avoid to run `vTaskSuspend` too fast
-      vTaskDelay(pdMS_TO_TICKS(5));
     } else {
-      vTaskSuspend(_paint_task_handle);
+      _paint_empty_record++;
+      if (_paint_empty_record >= 10) {
+        // Check again, avoid parellel `vTaskResume` called before `vTaskSuspend`
+        if (paint_queue_1.size() == 0 && paint_queue_2.size() == 0) {
+          vTaskSuspend(_paint_task_handle);
+        }
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(5));
+      }
     }
   }
   vTaskDelete(_paint_task_handle);

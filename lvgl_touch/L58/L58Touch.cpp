@@ -140,8 +140,7 @@ uint8_t L58Touch::read8(uint8_t regName) {
 
 TPoint L58Touch::scanPoint() {
   TPoint  point{0, 0, 0};
-  uint8_t pointIdx = 0;
-  uint8_t buf[7]   = {0};
+  uint8_t buf[7] = {0};
 
   buf[0] = 0xD0;
   buf[1] = 0x00;
