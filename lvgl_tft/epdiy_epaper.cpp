@@ -34,9 +34,7 @@ typedef struct _paint_t {
 static esp_pm_lock_handle_t epdiy_pm_lock;
 #endif  // CONFIG_PM_ENABLE
 
-// Fist flush `paint queue 1`, then flush `paint queue 2`
-vector<paint_t> paint_queue_1;
-vector<paint_t> paint_queue_2;
+vector<paint_t> paint_queue;
 
 /* Display initialization routine */
 void epdiy_init(void) {
@@ -124,8 +122,9 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   ptr.area       = update_area;
   ptr.color_map  = color_map;
   ptr.drv        = drv;
-  paint_queue_1.push_back(ptr);
-  paint_queue_2.push_back(ptr);
+  paint_queue.push_back(ptr);
+  vTaskResume(_paint_task_handle);
+  // Wait for a while to let `vTaskResume` run after `vTaskSuspend`
   vTaskDelay(pdMS_TO_TICKS(1));
   vTaskResume(_paint_task_handle);
 }
@@ -163,9 +162,9 @@ int _paint_empty_record = 0;
 // This will be faster than create a task for each paint
 void paint_task_cb(void* arg) {
   while (true) {
-    if (paint_queue_1.size() > 0) {
+    if (paint_queue.size()) {
       _paint_empty_record = 0;
-      auto first          = paint_queue_1.begin();
+      auto first          = paint_queue.begin();
       /**
        * buf_copy_to_framebuffer must be called in same thread with `epd_hl_update_area`, or will cause paint buffer wrong data
        */
@@ -176,14 +175,6 @@ void paint_task_cb(void* arg) {
      * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
      */
       lv_disp_flush_ready(first->drv);
-      // Must after used, or will change `first` to the second item
-      paint_queue_1.erase(paint_queue_1.begin());
-
-      // Wait to collect for `queue 1`, avoid to run `queue 2` too fast
-      // vTaskDelay(pdMS_TO_TICKS(2));
-    } else if (paint_queue_2.size() > 0) {
-      _paint_empty_record = 0;
-      auto first          = paint_queue_2.begin();
 
 #if CONFIG_PM_ENABLE
       ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
@@ -201,12 +192,13 @@ void paint_task_cb(void* arg) {
       ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
 #endif  // CONFIG_PM_ENABLE
 
-      paint_queue_2.erase(paint_queue_2.begin());
+      // Must after used, or will change `first` to the second item
+      paint_queue.erase(paint_queue.begin());
     } else {
       _paint_empty_record++;
       if (_paint_empty_record >= 10) {
         // Check again, avoid parellel `vTaskResume` called before `vTaskSuspend`
-        if (paint_queue_1.size() == 0 && paint_queue_2.size() == 0) {
+        if (!paint_queue.size()) {
           vTaskSuspend(_paint_task_handle);
         }
       } else {
