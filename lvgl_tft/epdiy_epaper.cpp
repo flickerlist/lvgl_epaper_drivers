@@ -125,7 +125,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   paint_queue.push_back(ptr);
   vTaskResume(_paint_task_handle);
   // Wait for a while to let `vTaskResume` run after `vTaskSuspend`
-  vTaskDelay(pdMS_TO_TICKS(1));
+  vTaskDelay(pdMS_TO_TICKS(2));
   vTaskResume(_paint_task_handle);
 }
 
