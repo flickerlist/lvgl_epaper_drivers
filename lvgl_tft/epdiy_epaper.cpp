@@ -35,6 +35,7 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 #endif  // CONFIG_PM_ENABLE
 
 vector<paint_t> paint_queue;
+bool            whole_repainting = false;  // Whole repaint task
 
 /* Display initialization routine */
 void epdiy_init(void) {
@@ -194,11 +195,15 @@ void paint_task_cb(void* arg) {
 
       // Must after used, or will change `first` to the second item
       paint_queue.erase(paint_queue.begin());
+    } else if (whole_repainting) {
+      _paint_empty_record = 0;
+      epdiy_repaint(epd_full_screen());
+      whole_repainting = false;
     } else {
       _paint_empty_record++;
       if (_paint_empty_record >= 10) {
         // Check again, avoid parellel `vTaskResume` called before `vTaskSuspend`
-        if (!paint_queue.size()) {
+        if (!paint_queue.size() && !whole_repainting) {
           vTaskSuspend(_paint_task_handle);
         }
       } else {
@@ -211,7 +216,11 @@ void paint_task_cb(void* arg) {
 
 /* refresh all screen */
 void epdiy_repaint_all() {
-  epdiy_repaint(epd_full_screen());
+  whole_repainting = true;
+  vTaskResume(_paint_task_handle);
+  // Wait for a while to let `vTaskResume` run after `vTaskSuspend`
+  vTaskDelay(pdMS_TO_TICKS(2));
+  vTaskResume(_paint_task_handle);
 }
 
 /* refresh area */
