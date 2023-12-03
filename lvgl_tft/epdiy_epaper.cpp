@@ -2,6 +2,7 @@
 #include "epd_driver.h"
 #include "epd_highlevel.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <time.h>
@@ -32,16 +33,30 @@ typedef struct _paint_t {
 vector<paint_t> paint_queue;
 bool            whole_repainting = false;  // Whole repaint task
 
+#if CONFIG_PM_ENABLE
+static esp_pm_lock_handle_t epdiy_pm_lock;
+#endif  // CONFIG_PM_ENABLE
+
 /* Display initialization routine */
 void epdiy_init(void) {
   epd_init(EPD_OPTIONS_DEFAULT);
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
 
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "epdiy_pm_lock",
+                                     &epdiy_pm_lock));
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
   //   Clear all always in init:
   epd_poweron();
   epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
   epd_poweroff();
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
 
   xTaskCreatePinnedToCore(&paint_task_cb, "paint_cb", 1024 * 4, NULL, 5,
                           &_paint_task_handle, 1);
@@ -159,6 +174,10 @@ void paint_task_cb(void* arg) {
      */
       lv_disp_flush_ready(first->drv);
 
+#if CONFIG_PM_ENABLE
+      ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
       if (first->paint_type == EPDIY_REPAINT_ALL) {
         epdiy_repaint(first->area);
       } else {
@@ -167,11 +186,25 @@ void paint_task_cb(void* arg) {
         epd_poweroff();
       }
 
+#if CONFIG_PM_ENABLE
+      ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
       // Must after used, or will change `first` to the second item
       paint_queue.erase(paint_queue.begin());
     } else if (whole_repainting) {
       _paint_empty_run_count = 0;
+
+#if CONFIG_PM_ENABLE
+      ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
       epdiy_repaint(epd_full_screen());
+
+#if CONFIG_PM_ENABLE
+      ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
       whole_repainting = false;
     } else {
       _paint_empty_run_count++;
