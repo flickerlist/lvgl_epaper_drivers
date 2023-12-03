@@ -2,7 +2,6 @@
 #include "epd_driver.h"
 #include "epd_highlevel.h"
 #include "esp_log.h"
-#include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <time.h>
@@ -30,10 +29,6 @@ typedef struct _paint_t {
   lv_disp_drv_t*          drv;
 } paint_t;
 
-#if CONFIG_PM_ENABLE
-static esp_pm_lock_handle_t epdiy_pm_lock;
-#endif  // CONFIG_PM_ENABLE
-
 vector<paint_t> paint_queue;
 bool            whole_repainting = false;  // Whole repaint task
 
@@ -43,13 +38,6 @@ void epdiy_init(void) {
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
 
-#if CONFIG_PM_ENABLE
-  ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "epdiy_pm_lock",
-                                     &epdiy_pm_lock));
-
-  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
-#endif  // CONFIG_PM_ENABLE
-
   //   Clear all always in init:
   epd_poweron();
   epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
@@ -57,10 +45,6 @@ void epdiy_init(void) {
 
   xTaskCreatePinnedToCore(&paint_task_cb, "paint_cb", 1024 * 4, NULL, 5,
                           &_paint_task_handle, 1);
-
-#if CONFIG_PM_ENABLE
-  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
-#endif  // CONFIG_PM_ENABLE
 }
 
 /* Suggested by @kisvegabor https://forum.lvgl.io/t/lvgl-port-to-be-used-with-epaper-displays/5630/26 */
@@ -125,9 +109,6 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   ptr.drv        = drv;
   paint_queue.push_back(ptr);
   vTaskResume(_paint_task_handle);
-  // Wait for a while to let `vTaskResume` run after `vTaskSuspend`
-  vTaskDelay(pdMS_TO_TICKS(2));
-  vTaskResume(_paint_task_handle);
 }
 
 /*
@@ -159,13 +140,14 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
   _epdiy_flush_type_cb = cb;
 }
 
-int _paint_empty_record = 0;
+int _paint_empty_run_count =
+  0;  // -1 means is suspending, 0 means has task running
 // This will be faster than create a task for each paint
 void paint_task_cb(void* arg) {
   while (true) {
     if (paint_queue.size()) {
-      _paint_empty_record = 0;
-      auto first          = paint_queue.begin();
+      _paint_empty_run_count = 0;
+      auto first             = paint_queue.begin();
       /**
        * buf_copy_to_framebuffer must be called in same thread with `epd_hl_update_area`, or will cause paint buffer wrong data
        */
@@ -177,10 +159,6 @@ void paint_task_cb(void* arg) {
      */
       lv_disp_flush_ready(first->drv);
 
-#if CONFIG_PM_ENABLE
-      ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
-#endif  // CONFIG_PM_ENABLE
-
       if (first->paint_type == EPDIY_REPAINT_ALL) {
         epdiy_repaint(first->area);
       } else {
@@ -189,37 +167,38 @@ void paint_task_cb(void* arg) {
         epd_poweroff();
       }
 
-#if CONFIG_PM_ENABLE
-      ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
-#endif  // CONFIG_PM_ENABLE
-
       // Must after used, or will change `first` to the second item
       paint_queue.erase(paint_queue.begin());
     } else if (whole_repainting) {
-      _paint_empty_record = 0;
+      _paint_empty_run_count = 0;
       epdiy_repaint(epd_full_screen());
       whole_repainting = false;
     } else {
-      _paint_empty_record++;
-      if (_paint_empty_record >= 10) {
-        // Check again, avoid parellel `vTaskResume` called before `vTaskSuspend`
-        if (!paint_queue.size() && !whole_repainting) {
-          vTaskSuspend(_paint_task_handle);
-        }
-      } else {
-        vTaskDelay(pdMS_TO_TICKS(5));
-      }
+      _paint_empty_run_count++;
+      vTaskDelay(pdMS_TO_TICKS(10));
     }
   }
   vTaskDelete(_paint_task_handle);
 }
 
+/* Check if epdiy paint thread can pause */
+bool epdiy_check_pause() {
+  if (paint_queue.size() || whole_repainting) {
+    return false;
+  }
+  if (_paint_empty_run_count >= 3) {
+    _paint_empty_run_count = -1;
+    vTaskSuspend(_paint_task_handle);
+    return true;
+  } else if (_paint_empty_run_count == -1) {
+    return true;
+  }
+  return false;
+}
+
 /* refresh all screen */
 void epdiy_repaint_all() {
   whole_repainting = true;
-  vTaskResume(_paint_task_handle);
-  // Wait for a while to let `vTaskResume` run after `vTaskSuspend`
-  vTaskDelay(pdMS_TO_TICKS(2));
   vTaskResume(_paint_task_handle);
 }
 

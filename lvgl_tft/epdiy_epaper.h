@@ -50,6 +50,14 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb);
 /* refresh all screen */
 void epdiy_repaint_all();
 
+/**
+ * @brief Check if epdiy paint thread can pause, call this in main loop
+ *
+ * @return true  : The task has been paused, can stop check
+ * @return false : The task has not been paused, need to continue check
+ */
+bool epdiy_check_pause();
+
 /* refresh area */
 void epdiy_repaint(EpdRect area);
 
