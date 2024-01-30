@@ -1,10 +1,10 @@
 #include "epdiy_epaper.h"
-#include "epd_driver.h"
 #include "epd_highlevel.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <epdiy.h>
 #include <time.h>
 #include <vector>
 
@@ -39,8 +39,12 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 
 /* Display initialization routine */
 void epdiy_init(void) {
-  epd_init(EPD_OPTIONS_DEFAULT);
-  hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
+  epd_init(&epd_board_v5, &ED060SCT, EPD_LUT_64K);
+  epd_set_vcom(1560);
+
+  //   epd_init(EPD_OPTIONS_DEFAULT);
+  hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
+  epd_set_rotation(EPD_ROT_LANDSCAPE);
   framebuffer = epd_hl_get_framebuffer(&hl);
 
 #if CONFIG_PM_ENABLE
@@ -65,11 +69,12 @@ void epdiy_init(void) {
 /* Suggested by @kisvegabor https://forum.lvgl.io/t/lvgl-port-to-be-used-with-epaper-displays/5630/26 */
 void buf_area_to_framebuffer(const lv_area_t* area, const uint8_t* image_data) {
   assert(framebuffer != NULL);
-  uint8_t*   fb_ptr = &framebuffer[area->y1 * EPD_WIDTH / 2 + area->x1 / 2];
+  auto       display_width = epd_rotated_display_width();
+  uint8_t*   fb_ptr = &framebuffer[area->y1 * display_width / 2 + area->x1 / 2];
   lv_coord_t img_w  = lv_area_get_width(area);
   for (uint32_t y = area->y1; y < area->y2; y++) {
     memcpy(fb_ptr, image_data, img_w / 2);
-    fb_ptr += EPD_WIDTH / 2;
+    fb_ptr += display_width / 2;
     image_data += img_w / 2;
   }
 }
@@ -78,22 +83,29 @@ void buf_area_to_framebuffer(const lv_area_t* area, const uint8_t* image_data) {
 void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
   assert(framebuffer != NULL);
 
+  auto display_width  = epd_rotated_display_width();
+  auto display_height = epd_rotated_display_height();
   for (uint32_t i = 0; i < image_area.width * image_area.height; i++) {
     uint8_t val = image_data[i] ? 0xff : 0x00;
 
     int xx = image_area.x + i % image_area.width;
-    if (xx < 0 || xx >= EPD_WIDTH) {
+    if (xx < 0 || xx >= display_width) {
       continue;
     }
     int yy = image_area.y + i / image_area.width;
-    if (yy < 0 || yy >= EPD_HEIGHT) {
+    if (yy < 0 || yy >= display_height) {
       continue;
     }
-    uint8_t* buf_ptr = &framebuffer[yy * EPD_WIDTH / 2 + xx / 2];
+    uint8_t* buf_ptr = &framebuffer[yy * display_width / 2 + xx / 2];
+    // if (xx % 2) {
+    //   *buf_ptr = (*buf_ptr & 0x0F) | (val << 4);
+    // } else {
+    //   *buf_ptr = (*buf_ptr & 0xF0) | val;
+    // }
     if (xx % 2) {
-      *buf_ptr = (*buf_ptr & 0x0F) | (val << 4);
+      *buf_ptr = (*buf_ptr & 0x0F) | (val & 0xF0);
     } else {
-      *buf_ptr = (*buf_ptr & 0xF0) | val;
+      *buf_ptr = (*buf_ptr & 0xF0) | val >> 4;
     }
   }
 }
@@ -178,13 +190,13 @@ void paint_task_cb(void* arg) {
       ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
 #endif  // CONFIG_PM_ENABLE
 
-      if (first->paint_type == EPDIY_REPAINT_ALL) {
-        epdiy_repaint(first->area);
-      } else {
-        epd_poweron();
-        epd_hl_update_area(&hl, updateMode, temperature, first->area);
-        epd_poweroff();
-      }
+      //   if (first->paint_type == EPDIY_REPAINT_ALL) {
+      //     epdiy_repaint(first->area);
+      //   } else {
+      epd_poweron();
+      epd_hl_update_area(&hl, updateMode, temperature, first->area);
+      epd_poweroff();
+      //   }
 
 #if CONFIG_PM_ENABLE
       ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
@@ -239,6 +251,7 @@ void epdiy_repaint_all() {
 void epdiy_repaint(EpdRect area) {
   epd_poweron();
   epd_clear_area_cycles(area, 1, _clear_cycle_time);
-  epd_hl_update_area_directly(&hl, updateMode, temperature, area);
+  epd_hl_update_area(&hl, updateMode, temperature, area);
+  epd_hl_update_area(&hl, updateMode, temperature, area);
   epd_poweroff();
 }

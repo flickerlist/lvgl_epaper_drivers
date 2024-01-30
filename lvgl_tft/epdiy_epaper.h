@@ -17,7 +17,7 @@ extern "C" {
 #endif
 #include "sdkconfig.h"
 
-#include "epd_driver.h"
+#include <epdiy.h>
 
 /* Configure your display */
 void epdiy_init(void);
