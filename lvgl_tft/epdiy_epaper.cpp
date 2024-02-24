@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <time.h>
 #include <vector>
@@ -30,8 +31,9 @@ typedef struct _paint_t {
   lv_disp_drv_t*          drv;
 } paint_t;
 
-vector<paint_t> paint_queue;
-bool            whole_repainting = false;  // Whole repaint task
+vector<paint_t>  paint_queue;
+xSemaphoreHandle paint_queue_xMutex;  // lock for paint_queue
+bool             whole_repainting = false;  // Whole repaint task
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;
@@ -39,6 +41,8 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 
 /* Display initialization routine */
 void epdiy_init(void) {
+  paint_queue_xMutex = xSemaphoreCreateMutex();
+
   epd_init(EPD_OPTIONS_DEFAULT);
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
@@ -122,7 +126,10 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   ptr.area       = update_area;
   ptr.color_map  = color_map;
   ptr.drv        = drv;
-  paint_queue.push_back(ptr);
+  if (xSemaphoreTake(paint_queue_xMutex, pdMS_TO_TICKS(30))) {
+    paint_queue.push_back(ptr);
+    xSemaphoreGive(paint_queue_xMutex);
+  }
   vTaskResume(_paint_task_handle);
 }
 
@@ -155,8 +162,8 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
   _epdiy_flush_type_cb = cb;
 }
 
-int _paint_empty_run_count =
-  0;  // -1 means is suspending, 0 means has task running
+// -1 means is suspending, 0 means has task running
+int _paint_empty_run_count = 0;
 // This will be faster than create a task for each paint
 void paint_task_cb(void* arg) {
   while (true) {
@@ -191,7 +198,10 @@ void paint_task_cb(void* arg) {
 #endif  // CONFIG_PM_ENABLE
 
       // Must after used, or will change `first` to the second item
-      paint_queue.erase(paint_queue.begin());
+      if (xSemaphoreTake(paint_queue_xMutex, pdMS_TO_TICKS(30))) {
+        paint_queue.erase(paint_queue.begin());
+        xSemaphoreGive(paint_queue_xMutex);
+      }
     } else if (whole_repainting) {
       _paint_empty_run_count = 0;
 
