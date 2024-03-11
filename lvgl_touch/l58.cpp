@@ -17,8 +17,8 @@
 * SOFTWARE.
 */
 
-#include "epd_driver.h"
 #include <driver/i2c.h>
+#include <epdiy.h>
 #include <esp_log.h>
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #  include <lvgl.h>

@@ -28,6 +28,10 @@
 
 #  define L58_ADDR 0x1A
 
+// The size write in firmware of L58
+# define L58_TOUCH_FIRMWARE_WIDTH 1024
+# define L58_TOUCH_FIRMWARE_HEIGHT 758
+
 // Note: We still could not read proper events, so we simulate Tap
 enum class TEvent { None, TouchStart, TouchMove, TouchEnd, Tap };
 
