@@ -168,6 +168,11 @@ TPoint L58Touch::scanPoint() {
       break;
   }
 
+  if (_touch_width != L58_TOUCH_FIRMWARE_WIDTH || _touch_height != L58_TOUCH_FIRMWARE_HEIGHT) {
+    x = ((uint32_t)x) * ((uint32_t)_touch_width) / L58_TOUCH_FIRMWARE_WIDTH;
+    y = ((uint32_t)y) * ((uint32_t)_touch_height) / L58_TOUCH_FIRMWARE_HEIGHT;
+  }
+
   point = {x, y, event};
   return point;
 }
