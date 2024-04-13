@@ -43,7 +43,7 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 void epdiy_init(void) {
   paint_queue_xMutex = xSemaphoreCreateMutex();
 
-  epd_init(&epd_board_v5, &ED060SC7, EPD_LUT_64K);
+  epd_init(&epd_board_v5, &ED060XC3, EPD_LUT_64K);
   epd_set_vcom(1560);
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);

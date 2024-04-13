@@ -74,7 +74,7 @@ class L58Touch {
   // Pending implementation. How much x->touch y↓touch is placed (In case is smaller than display)
   void setXoffset(uint16_t x_offset);
   void setYoffset(uint16_t y_offset);
-  void sleep();
+  void sleep(int32_t try_count = 10);
   // Smart template from EPD to swap x,y:
   template <typename T> static inline void swap(T& a, T& b) {
     T t = a;

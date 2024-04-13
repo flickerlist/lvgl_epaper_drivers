@@ -280,18 +280,17 @@ void L58Touch::clearFlags() {
   writeData(buf, sizeof(buf));
 }
 
-void L58Touch::sleep() {
+void L58Touch::sleep(int32_t try_count) {
   uint8_t buf[2] = {0xD1, 0X05};
 
-  int32_t   try_count = 0;
   esp_err_t res;
   while (true) {
-    try_count++;
     res = writeData(buf, sizeof(buf));
     if (res == ESP_OK) {
       break;
     }
-    if (try_count >= 10) {
+    try_count--;
+    if (try_count == 0) {
       break;
     }
     vTaskDelay(pdMS_TO_TICKS(300));
