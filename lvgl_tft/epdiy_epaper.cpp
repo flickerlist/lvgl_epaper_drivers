@@ -2,12 +2,10 @@
 #include "epd_driver.h"
 #include "epd_highlevel.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <time.h>
-#include <vector>
-
-using namespace std;
 
 EpdiyHighlevelState hl;
 uint16_t            flushcalls = 0;
@@ -18,19 +16,10 @@ const int           _clear_cycle_time = 12;
 enum EpdDrawMode updateMode = MODE_DU;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
-TaskHandle_t          _paint_task_handle;
-void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data);
-void paint_task_cb(void* arg);
 
-typedef struct _paint_t {
-  lvgl_epdiy_flush_type_t paint_type;
-  EpdRect                 area;
-  lv_color_t*             color_map;
-  lv_disp_drv_t*          drv;
-} paint_t;
-
-vector<paint_t> paint_queue;
-bool            whole_repainting = false;  // Whole repaint task
+#if CONFIG_PM_ENABLE
+static esp_pm_lock_handle_t epdiy_pm_lock;
+#endif  // CONFIG_PM_ENABLE
 
 /* Display initialization routine */
 void epdiy_init(void) {
@@ -38,13 +27,21 @@ void epdiy_init(void) {
   hl          = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   framebuffer = epd_hl_get_framebuffer(&hl);
 
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "epdiy_pm_lock",
+                                     &epdiy_pm_lock));
+
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
   //   Clear all always in init:
   epd_poweron();
   epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
   epd_poweroff();
 
-  xTaskCreatePinnedToCore(&paint_task_cb, "paint_cb", 1024 * 4, NULL, 5,
-                          &_paint_task_handle, 1);
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
 }
 
 /* Suggested by @kisvegabor https://forum.lvgl.io/t/lvgl-port-to-be-used-with-epaper-displays/5630/26 */
@@ -94,21 +91,39 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
 
-  lvgl_epdiy_flush_type_t _paint_type =
-    _epdiy_flush_type_cb ? _epdiy_flush_type_cb(&update_area, flushcalls) :
-                           EPDIY_PARTIAL_PAINT;
-  if (_paint_type == EPDIY_NO_PAINT) {
-    lv_disp_flush_ready(drv);
-    return;
+  lvgl_epdiy_flush_type_t _paint_type = EPDIY_REPAINT_ALL;
+
+  uint8_t* buf = (uint8_t*)color_map;
+
+  //   clock_t time_1 = clock();
+  // UNCOMMENT only one of this options
+  // SAFE Option with EPDiy copy of epd_copy_to_framebuffer
+  buf_copy_to_framebuffer(update_area, buf);
+  // buf_area_to_framebuffer(area, buf);
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
+  if (_paint_type == EPDIY_REPAINT_ALL) {
+    epdiy_repaint(update_area);
+  } else {
+    epd_poweron();
+    epd_hl_update_area(&hl, updateMode, temperature, update_area);
+    epd_poweroff();
   }
 
-  paint_t ptr;
-  ptr.paint_type = _paint_type;
-  ptr.area       = update_area;
-  ptr.color_map  = color_map;
-  ptr.drv        = drv;
-  paint_queue.push_back(ptr);
-  vTaskResume(_paint_task_handle);
+  //   clock_t time_2 = clock();
+  //   ESP_LOGI("EDDIY",
+  //            "epdiy_flush. x:%d y:%d w:%d h:%d; "
+  //            "use time: %ld ms; ",
+  //            (uint16_t)area->x1, (uint16_t)area->y1, w, h, time_2 - time_1);
+  /* Inform the graphics library that you are ready with the flushing */
+  lv_disp_flush_ready(drv);
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
 }
 
 /*
@@ -140,66 +155,9 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
   _epdiy_flush_type_cb = cb;
 }
 
-int _paint_empty_run_count =
-  0;  // -1 means is suspending, 0 means has task running
-// This will be faster than create a task for each paint
-void paint_task_cb(void* arg) {
-  while (true) {
-    if (paint_queue.size()) {
-      _paint_empty_run_count = 0;
-      auto first             = paint_queue.begin();
-      /**
-       * buf_copy_to_framebuffer must be called in same thread with `epd_hl_update_area`, or will cause paint buffer wrong data
-       */
-      uint8_t* buf = (uint8_t*)first->color_map;
-      buf_copy_to_framebuffer(first->area, buf);
-      /**
-     * This seems will destroy `color_map`, so call after used `color_map`
-     * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
-     */
-      lv_disp_flush_ready(first->drv);
-
-      if (first->paint_type == EPDIY_REPAINT_ALL) {
-        epdiy_repaint(first->area);
-      } else {
-        epd_poweron();
-        epd_hl_update_area(&hl, updateMode, temperature, first->area);
-        epd_poweroff();
-      }
-
-      // Must after used, or will change `first` to the second item
-      paint_queue.erase(paint_queue.begin());
-    } else if (whole_repainting) {
-      _paint_empty_run_count = 0;
-      epdiy_repaint(epd_full_screen());
-      whole_repainting = false;
-    } else {
-      _paint_empty_run_count++;
-      vTaskDelay(pdMS_TO_TICKS(10));
-    }
-  }
-  vTaskDelete(_paint_task_handle);
-}
-
-/* Check if epdiy paint thread can pause */
-bool epdiy_check_pause() {
-  if (paint_queue.size() || whole_repainting) {
-    return false;
-  }
-  if (_paint_empty_run_count >= 3) {
-    _paint_empty_run_count = -1;
-    vTaskSuspend(_paint_task_handle);
-    return true;
-  } else if (_paint_empty_run_count == -1) {
-    return true;
-  }
-  return false;
-}
-
 /* refresh all screen */
 void epdiy_repaint_all() {
-  whole_repainting = true;
-  vTaskResume(_paint_task_handle);
+  epdiy_repaint(epd_full_screen());
 }
 
 /* refresh area */
