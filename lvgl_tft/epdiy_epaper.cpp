@@ -17,6 +17,8 @@ enum EpdDrawMode updateMode = MODE_DU;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 
+void epdiy_set_white(EpdRect area);
+
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;
 #endif  // CONFIG_PM_ENABLE
@@ -93,6 +95,20 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
   lvgl_epdiy_flush_type_t _paint_type = EPDIY_REPAINT_ALL;
 
+  if (_paint_type == EPDIY_REPAINT_ALL) {
+    auto _start_time = clock();
+    epd_poweron();
+    epdiy_set_white(update_area);
+    epd_hl_update_area(&hl, updateMode, temperature, update_area);
+    epd_poweroff();
+    auto _end_time = clock();
+    ESP_LOGW(
+      "EPDIY",
+      "epd_hl_update_area with white. x:%d y:%d w:%d h:%d; use time: %ld ms; ",
+      update_area.x, update_area.y, update_area.width, update_area.height,
+      _end_time - _start_time);
+  }
+
   uint8_t* buf = (uint8_t*)color_map;
 
   //   clock_t time_1 = clock();
@@ -160,10 +176,41 @@ void epdiy_repaint_all() {
   epdiy_repaint(epd_full_screen());
 }
 
+void epdiy_set_white(EpdRect area) {
+  auto _start_time = clock();
+  auto x1          = area.x;
+  auto x2          = area.x + area.width;
+  auto int8_x1     = x1 % 2 == 1 ? x1 / 2 + 1 : x1 / 2;  // 5 -> 3
+  auto int8_x2     = x2 / 2;  // 9 -> 4
+  for (int y = area.y; y < area.y + area.height; y++) {
+    memset(hl.front_fb + EPD_WIDTH / 2 * y + int8_x1, 0xFF, int8_x2 - int8_x1);
+    if (x1 % 2 == 1) {
+      *(hl.front_fb + EPD_WIDTH / 2 * y + x1) |= 0x0F;
+    }
+    if (x2 % 2 == 1) {
+      *(hl.front_fb + EPD_WIDTH / 2 * y + x2 / 2) |= 0xF0;
+    }
+  }
+  auto _end_time = clock();
+  ESP_LOGW("EPDIY", "epdiy_set_white. x:%d y:%d w:%d h:%d; use time: %ld ms; ",
+           area.x, area.y, area.width, area.height, _end_time - _start_time);
+}
+
 /* refresh area */
 void epdiy_repaint(EpdRect area) {
+  auto _start_time = clock();
   epd_poweron();
-  epd_clear_area_cycles(area, 1, _clear_cycle_time);
-  epd_hl_update_area_directly(&hl, updateMode, temperature, area);
+  // epd_clear_area_cycles(area, 1, _clear_cycle_time);
+  // for (int i = 0; i < 10; i++) {
+  //   epd_push_pixels(area, _clear_cycle_time, 0);
+  // }
+  for (int i = 0; i < 10; i++) {
+    epd_push_pixels(area, _clear_cycle_time, 1);
+  }
+  // vTaskDelay(pdMS_TO_TICKS(2000));
+  epd_hl_update_area(&hl, updateMode, temperature, area);
   epd_poweroff();
+  auto _end_time = clock();
+  ESP_LOGW("EPDIY", "epdiy_repaint. x:%d y:%d w:%d h:%d; use time: %ld ms; ",
+           area.x, area.y, area.width, area.height, _end_time - _start_time);
 }
