@@ -43,7 +43,7 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 void epdiy_init(void) {
   paint_queue_xMutex = xSemaphoreCreateMutex();
 
-  epd_init(&epd_board_v5, &ED060XC3, EPD_LUT_64K);
+  epd_init(&epd_board_v7, &ED060XC3, EPD_LUT_64K);
   epd_set_vcom(1560);
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
@@ -239,11 +239,11 @@ void epdiy_repaint_all() {
 }
 
 void epdiy_set_area_to_white(EpdRect& area) {
-  for (int l=area.y; l < area.y + area.height; l++) {
+  for (int l = area.y; l < area.y + area.height; l++) {
     uint8_t* lfb = hl.front_fb + epd_width() / 2 * l;
     uint8_t* lbb = hl.back_fb + epd_width() / 2 * l;
 
-    for (int x=area.x; x < area.x + area.width; x++) {
+    for (int x = area.x; x < area.x + area.width; x++) {
       if (x % 2) {
         *(lbb + x / 2) = 0xF0 | (*(lbb + x / 2) & 0x0F);
       } else {
@@ -258,18 +258,18 @@ void epdiy_repaint(EpdRect area) {
   epd_poweron();
 
   // copy from epd_clear_area_cycles
-  const short white_time = _clear_cycle_time * 2;
-  const short dark_time  = _clear_cycle_time * 5;
+  // const short white_time = _clear_cycle_time * 2;
+  // const short dark_time  = _clear_cycle_time * 5;
 
-  for (int c = 0; c < 1; c++) {
-    for (int i = 0; i < 10; i++) {
-      epd_push_pixels(area, dark_time, 0);
-    }
-    for (int i = 0; i < 10; i++) {
-      epd_push_pixels(area, white_time, 1);
-    }
-  }
-  epdiy_set_area_to_white(area);
+  // for (int c = 0; c < 1; c++) {
+  //   for (int i = 0; i < 10; i++) {
+  //     epd_push_pixels(area, dark_time, 0);
+  //   }
+  //   for (int i = 0; i < 10; i++) {
+  //     epd_push_pixels(area, white_time, 1);
+  //   }
+  // }
+  // epdiy_set_area_to_white(area);
 
   epd_hl_update_area(&hl, updateMode, temperature, area);
 
