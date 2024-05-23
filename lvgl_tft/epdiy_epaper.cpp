@@ -271,6 +271,9 @@ void epdiy_repaint(EpdRect area) {
   // }
   // epdiy_set_area_to_white(area);
 
+  // epd_clear_area_cycles(area, 1, _clear_cycle_time);
+  // epd_hl_update_area_directly(&hl, updateMode, temperature, area);
+  
   epd_hl_update_area(&hl, updateMode, temperature, area);
 
   epd_poweroff();
