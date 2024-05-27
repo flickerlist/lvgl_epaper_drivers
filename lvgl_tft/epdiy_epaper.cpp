@@ -94,10 +94,11 @@ void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
       continue;
     }
     uint8_t* buf_ptr = &framebuffer[yy * EPD_WIDTH / 2 + xx / 2];
+    // pixel order: 10 32 54 76
     if (xx % 2) {
       *buf_ptr = (*buf_ptr & 0x0F) | (val << 4);
     } else {
-      *buf_ptr = (*buf_ptr & 0xF0) | val;
+      *buf_ptr = (*buf_ptr & 0xF0) | (val >> 4);
     }
   }
 }
