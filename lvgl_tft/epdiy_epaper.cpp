@@ -88,9 +88,9 @@ void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
     }
     uint8_t* buf_ptr = &framebuffer[yy * display_width / 2 + xx / 2];
     if (xx % 2) {
-      *buf_ptr = (*buf_ptr & 0x0F) | (val & 0xF0);
+      *buf_ptr = (*buf_ptr & 0x0F) | (val << 4);
     } else {
-      *buf_ptr = (*buf_ptr & 0xF0) | val >> 4;
+      *buf_ptr = (*buf_ptr & 0xF0) | (val >> 4);
     }
   }
 }
@@ -273,7 +273,7 @@ void epdiy_repaint(EpdRect area) {
 
   // epd_clear_area_cycles(area, 1, _clear_cycle_time);
   // epd_hl_update_area_directly(&hl, updateMode, temperature, area);
-  
+
   epd_hl_update_area(&hl, updateMode, temperature, area);
 
   epd_poweroff();
