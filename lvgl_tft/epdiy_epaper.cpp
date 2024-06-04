@@ -76,7 +76,7 @@ void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
   auto display_width  = epd_rotated_display_width();
   auto display_height = epd_rotated_display_height();
   for (uint32_t i = 0; i < image_area.width * image_area.height; i++) {
-    uint8_t val = image_data[i] ? 0xff : 0x00;
+    uint8_t val = image_data[i] > 0x99 ? 0xff : 0x00;
 
     int xx = image_area.x + i % image_area.width;
     if (xx < 0 || xx >= display_width) {
@@ -100,11 +100,24 @@ void epdiy_flush(lv_disp_drv_t*   drv,
                  const lv_area_t* area,
                  lv_color_t*      color_map) {
   ++flushcalls;
+  static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
+  ESP_LOGW("####", "epdiy_flush area x1:%d y1:%d x2:%d y2:%d", area->x1,
+           area->y1, area->x2, area->y2);
   uint16_t w = lv_area_get_width(area);
   uint16_t h = lv_area_get_height(area);
 
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
+
+  // capture the upper left and lower right corners
+  if (area->x1 < x1)
+    x1 = area->x1;
+  if (area->y1 < y1)
+    y1 = area->y1;
+  if (area->x2 > x2)
+    x2 = area->x2;
+  if (area->y2 > y2)
+    y2 = area->y2;
 
   lvgl_epdiy_flush_type_t _paint_type =
     _epdiy_flush_type_cb ? _epdiy_flush_type_cb(&update_area, flushcalls) :
@@ -114,16 +127,51 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     return;
   }
 
-  paint_t ptr;
-  ptr.paint_type = _paint_type;
-  ptr.area       = update_area;
-  ptr.color_map  = color_map;
-  ptr.drv        = drv;
-  if (xSemaphoreTake(paint_queue_xMutex, pdMS_TO_TICKS(30))) {
-    paint_queue.push_back(ptr);
-    xSemaphoreGive(paint_queue_xMutex);
+  uint8_t* buf = (uint8_t*)color_map;
+  ESP_LOGW(
+    "####",
+    "epdiy_flush area x:%d y:%d width:%d height:%d; buf_copy_to_framebuffer "
+    "before: %ld",
+    update_area.x, update_area.y, update_area.width, update_area.height,
+    clock());
+  buf_copy_to_framebuffer(update_area, buf);
+  ESP_LOGW(
+    "####",
+    "epdiy_flush area x:%d y:%d width:%d height:%d; buf_copy_to_framebuffer "
+    "after: %ld",
+    update_area.x, update_area.y, update_area.width, update_area.height,
+    clock());
+  /**
+     * This seems will destroy `color_map`, so call after used `color_map`
+     * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
+     */
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+  if (lv_disp_flush_is_last(drv)) {
+    lv_disp_flush_ready(drv);
+
+    // if (_paint_type == EPDIY_REPAINT_ALL) {
+    //   epdiy_repaint(update_area);
+    // } else {
+    update_area.x      = x1;
+    update_area.y      = y1;
+    update_area.width  = (x2 - x1) + 1;
+    update_area.height = (y2 - y1) + 1;
+    epd_poweron();
+    epd_hl_update_area(&hl, updateMode, temperature, update_area);
+    epd_poweroff();
+    ESP_LOGW("####",
+             "epdiy_flush paint area x:%d y:%d width:%d height:%d; time:%ld",
+             update_area.x, update_area.y, update_area.width,
+             update_area.height, clock());
+    x1 = y1 = 65535;
+    x2 = y2 = -1;  // reset update boundary
+    // }
+  } else {
+    lv_disp_flush_ready(drv);
   }
-  vTaskResume(_paint_task_handle);
 }
 
 /*
@@ -258,23 +306,23 @@ void epdiy_repaint(EpdRect area) {
   epd_poweron();
 
   // copy from epd_clear_area_cycles
-  // const short white_time = _clear_cycle_time * 2;
-  // const short dark_time  = _clear_cycle_time * 5;
+  const short white_time = _clear_cycle_time * 2;
+  const short dark_time  = _clear_cycle_time * 5;
 
-  // for (int c = 0; c < 1; c++) {
-  //   for (int i = 0; i < 10; i++) {
-  //     epd_push_pixels(area, dark_time, 0);
-  //   }
-  //   for (int i = 0; i < 10; i++) {
-  //     epd_push_pixels(area, white_time, 1);
-  //   }
-  // }
-  // epdiy_set_area_to_white(area);
+  for (int c = 0; c < 1; c++) {
+    for (int i = 0; i < 10; i++) {
+      epd_push_pixels(area, dark_time, 0);
+    }
+    for (int i = 0; i < 10; i++) {
+      epd_push_pixels(area, white_time, 1);
+    }
+  }
+  epdiy_set_area_to_white(area);
 
-  // epd_clear_area_cycles(area, 1, _clear_cycle_time);
-  // epd_hl_update_area_directly(&hl, updateMode, temperature, area);
+  epd_clear_area_cycles(area, 1, _clear_cycle_time);
+  epd_hl_update_area_directly(&hl, updateMode, temperature, area);
 
-  epd_hl_update_area(&hl, updateMode, temperature, area);
+  //   epd_hl_update_area(&hl, updateMode, temperature, area);
 
   epd_poweroff();
 }
