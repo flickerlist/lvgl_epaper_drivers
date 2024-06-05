@@ -43,7 +43,7 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 void epdiy_init(void) {
   paint_queue_xMutex = xSemaphoreCreateMutex();
 
-  epd_init(&epd_board_v7, &ED060XC3, EPD_LUT_64K);
+  epd_init(&epd_board_v7, &ED047TC2, EPD_LUT_64K);
   epd_set_vcom(1560);
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
@@ -101,8 +101,9 @@ void epdiy_flush(lv_disp_drv_t*   drv,
                  lv_color_t*      color_map) {
   ++flushcalls;
   static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
-  ESP_LOGW("####", "epdiy_flush area x1:%d y1:%d x2:%d y2:%d", area->x1,
-           area->y1, area->x2, area->y2);
+  ESP_LOGW("****", "epdiy_flush start x:%d y:%d width:%d height:%d; time: %ld",
+           area->x1, area->y1, area->x2 - area->x1, area->y2 - area->y1,
+           clock());
   uint16_t w = lv_area_get_width(area);
   uint16_t h = lv_area_get_height(area);
 
@@ -162,13 +163,17 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     epd_poweron();
     epd_hl_update_area(&hl, updateMode, temperature, update_area);
     epd_poweroff();
-    ESP_LOGW("####",
+
+#if CONFIG_PM_ENABLE
+    ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif  // CONFIG_PM_ENABLE
+
+    ESP_LOGW("----",
              "epdiy_flush paint area x:%d y:%d width:%d height:%d; time:%ld",
              update_area.x, update_area.y, update_area.width,
              update_area.height, clock());
     x1 = y1 = 65535;
     x2 = y2 = -1;  // reset update boundary
-    // }
   } else {
     lv_disp_flush_ready(drv);
   }
