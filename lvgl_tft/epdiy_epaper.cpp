@@ -29,6 +29,7 @@ typedef struct _paint_t {
   EpdRect                 area;
   lv_color_t*             color_map;
   lv_disp_drv_t*          drv;
+  bool                    is_last;
 } paint_t;
 
 vector<paint_t>  paint_queue;
@@ -43,7 +44,7 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 void epdiy_init(void) {
   paint_queue_xMutex = xSemaphoreCreateMutex();
 
-  epd_init(&epd_board_v7, &ED047TC2, EPD_LUT_64K);
+  epd_init(&epd_board_v7, &ED060XC3_2, EPD_LUT_64K);
   epd_set_vcom(1560);
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
@@ -100,7 +101,6 @@ void epdiy_flush(lv_disp_drv_t*   drv,
                  const lv_area_t* area,
                  lv_color_t*      color_map) {
   ++flushcalls;
-  static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
   ESP_LOGW("****", "epdiy_flush start x:%d y:%d width:%d height:%d; time: %ld",
            area->x1, area->y1, area->x2 - area->x1, area->y2 - area->y1,
            clock());
@@ -110,6 +110,28 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   EpdRect update_area = {
     .x = (uint16_t)area->x1, .y = (uint16_t)area->y1, .width = w, .height = h};
 
+  lvgl_epdiy_flush_type_t _paint_type =
+    _epdiy_flush_type_cb ? _epdiy_flush_type_cb(&update_area, flushcalls) :
+                           EPDIY_PARTIAL_PAINT;
+  if (_paint_type == EPDIY_NO_PAINT) {
+    lv_disp_flush_ready(drv);
+    return;
+  }
+
+  //   belowing code has same paint time
+  //   paint_t ptr;
+  //   ptr.paint_type = _paint_type;
+  //   ptr.area       = update_area;
+  //   ptr.color_map  = color_map;
+  //   ptr.drv        = drv;
+  //   ptr.is_last    = lv_disp_flush_is_last(drv);
+  //   if (xSemaphoreTake(paint_queue_xMutex, pdMS_TO_TICKS(30))) {
+  //     paint_queue.push_back(ptr);
+  //     xSemaphoreGive(paint_queue_xMutex);
+  //   }
+  //   vTaskResume(_paint_task_handle);
+
+  static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
   // capture the upper left and lower right corners
   if (area->x1 < x1)
     x1 = area->x1;
@@ -119,14 +141,6 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     x2 = area->x2;
   if (area->y2 > y2)
     y2 = area->y2;
-
-  lvgl_epdiy_flush_type_t _paint_type =
-    _epdiy_flush_type_cb ? _epdiy_flush_type_cb(&update_area, flushcalls) :
-                           EPDIY_PARTIAL_PAINT;
-  if (_paint_type == EPDIY_NO_PAINT) {
-    lv_disp_flush_ready(drv);
-    return;
-  }
 
   uint8_t* buf = (uint8_t*)color_map;
   ESP_LOGW(
@@ -143,9 +157,9 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     update_area.x, update_area.y, update_area.width, update_area.height,
     clock());
   /**
-     * This seems will destroy `color_map`, so call after used `color_map`
-     * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
-     */
+       * This seems will destroy `color_map`, so call after used `color_map`
+       * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
+       */
 
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
@@ -153,16 +167,23 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   if (lv_disp_flush_is_last(drv)) {
     lv_disp_flush_ready(drv);
 
-    // if (_paint_type == EPDIY_REPAINT_ALL) {
-    //   epdiy_repaint(update_area);
-    // } else {
+    // reset area
     update_area.x      = x1;
     update_area.y      = y1;
     update_area.width  = (x2 - x1) + 1;
     update_area.height = (y2 - y1) + 1;
-    epd_poweron();
-    epd_hl_update_area(&hl, updateMode, temperature, update_area);
-    epd_poweroff();
+
+    // reset update boundary
+    x1 = y1 = 65535;
+    x2 = y2 = -1;
+
+    if (_paint_type == EPDIY_REPAINT_ALL) {
+      epdiy_repaint(update_area);
+    } else {
+      epd_poweron();
+      epd_hl_update_area(&hl, updateMode, temperature, update_area);
+      epd_poweroff();
+    }
 
 #if CONFIG_PM_ENABLE
     ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
@@ -172,8 +193,6 @@ void epdiy_flush(lv_disp_drv_t*   drv,
              "epdiy_flush paint area x:%d y:%d width:%d height:%d; time:%ld",
              update_area.x, update_area.y, update_area.width,
              update_area.height, clock());
-    x1 = y1 = 65535;
-    x2 = y2 = -1;  // reset update boundary
   } else {
     lv_disp_flush_ready(drv);
   }
@@ -219,24 +238,65 @@ void paint_task_cb(void* arg) {
       /**
        * buf_copy_to_framebuffer must be called in same thread with `epd_hl_update_area`, or will cause paint buffer wrong data
        */
+
+      static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
+      auto       area = first->area;
+
+      ESP_LOGW("####",
+               "epdiy_flush area x:%d y:%d width:%d height:%d; "
+               "buf_copy_to_framebuffer "
+               "before: %ld",
+               area.x, area.y, area.width, area.height, clock());
       uint8_t* buf = (uint8_t*)first->color_map;
-      buf_copy_to_framebuffer(first->area, buf);
+      buf_copy_to_framebuffer(area, buf);
+      ESP_LOGW("####",
+               "epdiy_flush area x:%d y:%d width:%d height:%d; "
+               "buf_copy_to_framebuffer "
+               "after: %ld",
+               area.x, area.y, area.width, area.height, clock());
+
+      // capture the upper left and lower right corners
+      if (area.x < x1)
+        x1 = area.x;
+      if (area.y < y1)
+        y1 = area.y;
+      if (area.x + area.width > x2)
+        x2 = area.x + area.width;
+      if (area.y + area.height > y2)
+        y2 = area.y + area.height;
+
       /**
      * This seems will destroy `color_map`, so call after used `color_map`
      * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
      */
       lv_disp_flush_ready(first->drv);
 
+      // reset area
+      area.x      = x1;
+      area.y      = y1;
+      area.width  = (x2 - x1) + 1;
+      area.height = (y2 - y1) + 1;
+
+      // reset update boundary
+      x1 = y1 = 65535;
+      x2 = y2 = -1;
+
 #if CONFIG_PM_ENABLE
       ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
 #endif  // CONFIG_PM_ENABLE
 
-      if (first->paint_type == EPDIY_REPAINT_ALL) {
-        epdiy_repaint(first->area);
-      } else {
-        epd_poweron();
-        epd_hl_update_area(&hl, updateMode, temperature, first->area);
-        epd_poweroff();
+      if (first->is_last) {
+        if (first->paint_type == EPDIY_REPAINT_ALL) {
+          epdiy_repaint(area);
+        } else {
+          epd_poweron();
+          epd_hl_update_area(&hl, updateMode, temperature, area);
+          epd_poweroff();
+        }
+        ESP_LOGW(
+          "----",
+          "epdiy_flush paint area x:%d y:%d width:%d height:%d; time:%ld",
+          area.x, area.y, area.width, area.height, clock());
       }
 
 #if CONFIG_PM_ENABLE
@@ -293,7 +353,6 @@ void epdiy_repaint_all() {
 
 void epdiy_set_area_to_white(EpdRect& area) {
   for (int l = area.y; l < area.y + area.height; l++) {
-    uint8_t* lfb = hl.front_fb + epd_width() / 2 * l;
     uint8_t* lbb = hl.back_fb + epd_width() / 2 * l;
 
     for (int x = area.x; x < area.x + area.width; x++) {
@@ -309,25 +368,6 @@ void epdiy_set_area_to_white(EpdRect& area) {
 /* refresh area */
 void epdiy_repaint(EpdRect area) {
   epd_poweron();
-
-  // copy from epd_clear_area_cycles
-  const short white_time = _clear_cycle_time * 2;
-  const short dark_time  = _clear_cycle_time * 5;
-
-  for (int c = 0; c < 1; c++) {
-    for (int i = 0; i < 10; i++) {
-      epd_push_pixels(area, dark_time, 0);
-    }
-    for (int i = 0; i < 10; i++) {
-      epd_push_pixels(area, white_time, 1);
-    }
-  }
-  epdiy_set_area_to_white(area);
-
-  epd_clear_area_cycles(area, 1, _clear_cycle_time);
-  epd_hl_update_area_directly(&hl, updateMode, temperature, area);
-
-  //   epd_hl_update_area(&hl, updateMode, temperature, area);
-
+  epd_hl_update_area(&hl, updateMode, temperature, area);
   epd_poweroff();
 }
