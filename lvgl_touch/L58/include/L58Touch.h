@@ -16,21 +16,21 @@
 #include "sdkconfig.h"
 #include <stdio.h>
 #ifndef touch_ttgo_h
-#  define touch_ttgo_h
-// I2C Constants
-#  define I2C_MASTER_TX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
-#  define I2C_MASTER_RX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
+  #define touch_ttgo_h
+  // I2C Constants
+  #define I2C_MASTER_TX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
+  #define I2C_MASTER_RX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
 
-#  define ACK_CHECK_EN 0x1 /*!< I2C master will check ack from slave*/
-#  define ACK_CHECK_DIS 0x0 /*!< I2C master will not check ack from slave */
-#  define ACK_VAL 0x0 /*!< I2C ack value */
-#  define NACK_VAL 0x1 /*!< I2C nack value */
+  #define ACK_CHECK_EN 0x1 /*!< I2C master will check ack from slave*/
+  #define ACK_CHECK_DIS 0x0 /*!< I2C master will not check ack from slave */
+  #define ACK_VAL 0x0 /*!< I2C ack value */
+  #define NACK_VAL 0x1 /*!< I2C nack value */
 
-#  define L58_ADDR 0x1A
+  #define L58_ADDR 0x1A
 
-// The size write in firmware of L58
-# define L58_TOUCH_FIRMWARE_WIDTH 1024
-# define L58_TOUCH_FIRMWARE_HEIGHT 758
+  // The size write in firmware of L58
+  #define L58_TOUCH_FIRMWARE_WIDTH 1024
+  #define L58_TOUCH_FIRMWARE_HEIGHT 758
 
 // Note: We still could not read proper events, so we simulate Tap
 enum class TEvent { None, TouchStart, TouchMove, TouchEnd, Tap };
@@ -62,18 +62,14 @@ class L58Touch {
   // handler when the intPin interrupted, can only do very little, and `can't call log`.
   static void registerTouchInterruptHandler(TouchInterruptHandler* fn);
 
-  bool    begin(uint16_t width = 0, uint16_t height = 0);
-  void    registerTouchHandler(void (*fn)(TPoint point, TEvent e));
-  uint8_t touched();
-  TPoint  loop();
-  TPoint  processTouch();
+  bool   begin(uint16_t width = 0, uint16_t height = 0);
+  TPoint loop();
+  TPoint processTouch();
   // Helper functions to make the touch display aware
   void setRotation(uint8_t rotation);
   void setTouchWidth(uint16_t width);
   void setTouchHeight(uint16_t height);
   // Pending implementation. How much x->touch y↓touch is placed (In case is smaller than display)
-  void setXoffset(uint16_t x_offset);
-  void setYoffset(uint16_t y_offset);
   void sleep(int32_t try_count = 10);
   // Smart template from EPD to swap x,y:
   template <typename T> static inline void swap(T& a, T& b) {
@@ -82,7 +78,7 @@ class L58Touch {
     b   = t;
   }
 
-  void        (*_touchHandler)(TPoint point, TEvent e) = nullptr;
+  void (*_touchHandler)(TPoint point, TEvent e) = nullptr;
   TouchData_t data[5];
   // Tap detection is enabled by default
   bool tapDetectionEnabled = true;
@@ -90,14 +86,9 @@ class L58Touch {
   uint16_t tapDetectionMillisDiff = 100;
 
  private:
-  TPoint    scanPoint();
-  void      writeRegister8(uint8_t reg, uint8_t val);
-  esp_err_t writeData(uint8_t* data, int len);
-  esp_err_t readBytes(uint8_t* data, int len);
-  uint8_t   readRegister8(uint8_t reg, uint8_t* data_buf);
-  void      fireEvent(TPoint point, TEvent e);
-  uint8_t   read8(uint8_t regName);
-  void      clearFlags();
+  TPoint scanPoint();
+  void   fireEvent(TPoint point, TEvent e);
+  void   clearFlags();
 
   static L58Touch* _instance;
   uint8_t          _intPin;
