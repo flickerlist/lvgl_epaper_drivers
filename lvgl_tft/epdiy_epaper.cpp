@@ -49,9 +49,6 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 void epdiy_init(void) {
   paint_queue_xMutex = xSemaphoreCreateMutex();
 
-  epd_init(&epd_board_v7, &ED060XC3_2, EPD_LUT_64K);
-  epd_set_vcom(1560);
-
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   framebuffer = epd_hl_get_framebuffer(&hl);
