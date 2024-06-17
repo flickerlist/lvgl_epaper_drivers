@@ -18,7 +18,6 @@
 */
 
 #include <driver/i2c.h>
-#include <epdiy.h>
 #include <esp_log.h>
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #  include <lvgl.h>
@@ -30,6 +29,12 @@
 #include "L58Touch.h"
 L58Touch Touch(CONFIG_LV_TOUCH_INT);
 #define TAG "L58"
+
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  #include <epdiy.h>
+#else
+  #include "epd_driver.h"
+#endif
 
 TPoint point;
 

@@ -11,13 +11,17 @@ extern "C" {
 #endif
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE
-#  include "lvgl.h"
+  #include "lvgl.h"
 #else
-#  include "lvgl/lvgl.h"
+  #include "lvgl/lvgl.h"
 #endif
 #include "sdkconfig.h"
 
-#include <epdiy.h>
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  #include <epdiy.h>
+#else
+  #include "epd_driver.h"
+#endif
 
 /* Configure your display */
 void epdiy_init(void);
