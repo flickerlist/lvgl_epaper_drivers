@@ -345,7 +345,7 @@ void epdiy_repaint_full_screen() {
   epd_hl_update_area(&hl, updateMode, temperature, area);
   epd_poweroff();
 
-#elif
+#else
 
   epdiy_repaint(epd_full_screen());
 
