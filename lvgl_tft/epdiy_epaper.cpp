@@ -126,7 +126,12 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   ptr.area       = update_area;
   ptr.color_map  = color_map;
   ptr.drv        = drv;
-  ptr.is_last    = lv_disp_flush_is_last(drv);
+  #ifdef CONFIG_IDF_TARGET_ESP32S3
+  ptr.is_last = lv_disp_flush_is_last(drv);
+  #else
+  // v5 board 批量渲染效果不好，会整屏闪烁一次
+  ptr.is_last = true;
+  #endif
   if (xSemaphoreTake(paint_queue_xMutex, pdMS_TO_TICKS(30))) {
     paint_queue.push_back(ptr);
     xSemaphoreGive(paint_queue_xMutex);
@@ -223,8 +228,9 @@ void paint_task_cb(void* arg) {
        * buf_copy_to_framebuffer must be called in same thread with `epd_hl_update_area`, or will cause paint buffer wrong data
        */
 
-      static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
-      auto       area = first->area;
+      static int  x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
+      static bool has_paint_all = false;
+      auto        area          = first->area;
 
       uint8_t* buf = (uint8_t*)first->color_map;
       buf_copy_to_framebuffer(area, buf);
@@ -245,17 +251,21 @@ void paint_task_cb(void* arg) {
       if (area.y + area.height > y2)
         y2 = area.y + area.height;
 
+      if (first->paint_type == EPDIY_REPAINT_ALL) {
+        has_paint_all = true;
+      }
+
       if (first->is_last) {
         // reset area
         area.x      = x1;
         area.y      = y1;
-        area.width  = (x2 - x1) + 1;
-        area.height = (y2 - y1) + 1;
+        area.width  = (x2 - x1);
+        area.height = (y2 - y1);
 
 #if CONFIG_PM_ENABLE
         ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
 #endif
-        if (first->paint_type == EPDIY_REPAINT_ALL) {
+        if (has_paint_all) {
           epdiy_repaint(area);
         } else {
           epd_poweron();
@@ -268,7 +278,8 @@ void paint_task_cb(void* arg) {
 
         // reset update boundary
         x1 = y1 = 65535;
-        x2 = y2 = -1;
+        x2 = y2       = -1;
+        has_paint_all = false;
       }
 
       // Must after used, or will change `first` to the second item
