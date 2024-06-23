@@ -9,6 +9,13 @@
 L58Touch*          L58Touch::_instance = nullptr;
 static const char* TAG                 = "L58Touch";
 
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  // 1000ms will call epdiy crash on s3 board (pca9555_set_value)
+  #define TOUCH_I2C_TIMEOUT 100
+#else
+  #define TOUCH_I2C_TIMEOUT 1000
+#endif
+
 /**
  * Record the interrupt of intPin.
  * When interrupt triggered, set to '1', after used, set to '0'.
@@ -138,7 +145,8 @@ TPoint L58Touch::scanPoint() {
 
   buf[0] = 0xD0;
   buf[1] = 0x00;
-  esp_utils::i2c_write_and_read(L58_ADDR, -1, buf, 2, buf, 7);
+  esp_utils::i2c_write_and_read(L58_ADDR, buf[0], buf + 1, 1, buf, 7,
+                                TOUCH_I2C_TIMEOUT);
   uint16_t x     = (uint16_t)((buf[1] << 4) | ((buf[3] >> 4) & 0x0F));
   uint16_t y     = (uint16_t)((buf[2] << 4) | (buf[3] & 0x0F));
   uint8_t  event = (buf[0] & 0x0F) >> 1;
@@ -191,16 +199,19 @@ void L58Touch::setTouchHeight(uint16_t height) {
 }
 
 void L58Touch::clearFlags() {
-  uint8_t buf[3] = {0xD0, 0X00, 0XAB};
-  esp_utils::i2c_write(L58_ADDR, -1, buf, sizeof(buf));
+  uint8_t reg    = 0xD0;
+  uint8_t buf[2] = {0X00, 0XAB};
+  esp_utils::i2c_write(L58_ADDR, reg, buf, sizeof(buf), TOUCH_I2C_TIMEOUT);
 }
 
 void L58Touch::sleep(int32_t try_count) {
-  uint8_t buf[2] = {0xD1, 0X05};
+  uint8_t reg    = 0xD1;
+  uint8_t buf[1] = {0X05};
 
   esp_err_t res;
   while (true) {
-    res = esp_utils::i2c_write(L58_ADDR, -1, buf, sizeof(buf));
+    res =
+      esp_utils::i2c_write(L58_ADDR, reg, buf, sizeof(buf), TOUCH_I2C_TIMEOUT);
     if (res == ESP_OK) {
       break;
     }
