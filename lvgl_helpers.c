@@ -137,7 +137,7 @@ void lvgl_driver_init(void)
         touch_driver_init();
     #elif defined (CONFIG_LV_TOUCH_DRIVER_ADC)
         touch_driver_init();
-    #elif defined (CONFIG_LV_TOUCH_DRIVER_DISPLAY) || defined (CONFIG_LV_TOUCH_CONTROLLER_L58)
+    #elif defined (CONFIG_LV_TOUCH_DRIVER_DISPLAY) || defined (CONFIG_LV_TOUCH_CONTROLLER_L58) || defined(CONFIG_LV_TOUCH_CONTROLLER_CF1133)
         touch_driver_init();
     #else
     #error "No protocol defined for touch controller"

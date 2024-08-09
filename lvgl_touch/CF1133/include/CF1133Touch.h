@@ -15,16 +15,17 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #include <stdio.h>
-#ifndef touch_ttgo_h
-  #define touch_ttgo_h
 
-  #define L58_ADDR 0x1A
+#ifndef touch_cf1133_h
+  #define touch_cf1133_h
 
-  // The size write in firmware of L58
-  #define L58_TOUCH_FIRMWARE_WIDTH 1024
-  #define L58_TOUCH_FIRMWARE_HEIGHT 758
+  #define CF1133_ADDR 0x55
 
-struct TPoint {
+  // The size write in firmware of CF1133
+  #define CF1133_TOUCH_FIRMWARE_WIDTH 1024
+  #define CF1133_TOUCH_FIRMWARE_HEIGHT 758
+
+struct CF1133TPoint {
   uint16_t x;
   uint16_t y;
   uint8_t  event;
@@ -33,7 +34,7 @@ struct TPoint {
 // handler when the intPin interrupted
 typedef void TouchInterruptHandler();
 
-class L58Touch {
+class CF1133Touch {
   typedef struct {
     uint8_t  id;
     uint8_t  event;
@@ -43,23 +44,24 @@ class L58Touch {
 
  public:
   // TwoWire * wire will be replaced by ESP-IDF https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/i2c.html
-  L58Touch(int8_t intPin);
-  ~L58Touch();
+  CF1133Touch(int8_t intPin);
+  ~CF1133Touch();
 
-  static L58Touch* instance();
+  static CF1133Touch* instance();
 
   // handler when the intPin interrupted, can only do very little, and `can't call log`.
   static void registerTouchInterruptHandler(TouchInterruptHandler* fn);
 
-  bool   begin(uint16_t width = 0, uint16_t height = 0);
-  TPoint loop();
-  TPoint processTouch();
+  bool         begin(uint16_t width = 0, uint16_t height = 0);
+  CF1133TPoint loop();
+  CF1133TPoint processTouch();
   // Helper functions to make the touch display aware
   void setRotation(uint8_t rotation);
   void setTouchWidth(uint16_t width);
   void setTouchHeight(uint16_t height);
   // Pending implementation. How much x->touch y↓touch is placed (In case is smaller than display)
   void sleep(int32_t try_count = 10);
+  void wakeup(int32_t try_count = 10);
   // Smart template from EPD to swap x,y:
   template <typename T> static inline void swap(T& a, T& b) {
     T t = a;
@@ -74,11 +76,10 @@ class L58Touch {
   uint16_t tapDetectionMillisDiff = 100;
 
  private:
-  TPoint scanPoint();
-  void   clearFlags();
+  CF1133TPoint scanPoint();
 
-  static L58Touch* _instance;
-  uint8_t          _intPin;
+  static CF1133Touch* _instance;
+  uint8_t             _intPin;
 
   // Make touch rotation aware:
   uint8_t  _rotation     = 0;
@@ -87,8 +88,8 @@ class L58Touch {
 
   uint8_t       _touches;
   uint16_t      _touchX[2], _touchY[2], _touchEvent[2];
-  TPoint        _points[10];
-  TPoint        _point;
+  CF1133TPoint  _points[10];
+  CF1133TPoint  _point;
   uint8_t       _pointIdx       = 0;
   unsigned long _touchStartTime = 0;
   unsigned long _touchEndTime   = 0;

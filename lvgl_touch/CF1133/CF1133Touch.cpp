@@ -1,11 +1,8 @@
-// This is the first experimental Touch component for the LILYGO EPD47 touch overlay
-// Controller: L58  -> https://github.com/Xinyuan-LilyGO/LilyGo-EPD47/files/6059098/L58.V1.0.pdf
-// Note: Rotation is only working for certain angles (0 works alright, 2 also) Others still need to be corrected
-#include "L58Touch.h"
+#include "CF1133Touch.h"
 #include "esp_utils.h"
 
-L58Touch*          L58Touch::_instance = nullptr;
-static const char* TAG                 = "L58Touch";
+CF1133Touch*       CF1133Touch::_instance = nullptr;
+static const char* TAG                    = "CF1133Touch";
 
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   // 1000ms will call epdiy crash on s3 board (pca9555_set_value)
@@ -25,6 +22,8 @@ static TouchInterruptHandler* _touchInterruptHandler = nullptr;
 
 // touch interrupt handler
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
+  //   ets_printf("touch interrupt level: %d\n",
+  //              gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT));
   if (interrupt_trigger == 0) {
     interrupt_trigger = 1;
   }
@@ -33,20 +32,20 @@ static void IRAM_ATTR gpio_isr_handler(void* arg) {
   }
 }
 
-L58Touch::L58Touch(int8_t intPin) {
+CF1133Touch::CF1133Touch(int8_t intPin) {
   _instance = this;
   _intPin   = intPin;
 }
 
 // Destructor does nothing for now
-L58Touch::~L58Touch() {}
+CF1133Touch::~CF1133Touch() {}
 
-L58Touch* L58Touch::instance() {
+CF1133Touch* CF1133Touch::instance() {
   return _instance;
 }
 
-bool L58Touch::begin(uint16_t width, uint16_t height) {
-  ESP_LOGI(TAG, "I2C SDA:%d SCL:%d INT:%d; ", CONFIG_LV_TOUCH_I2C_SDA,
+bool CF1133Touch::begin(uint16_t width, uint16_t height) {
+  ESP_LOGI(TAG, "I2C SDA:%d SCL:%d INT:%d", CONFIG_LV_TOUCH_I2C_SDA,
            CONFIG_LV_TOUCH_I2C_SCL, _intPin);
 
   _touch_width  = width;
@@ -73,7 +72,9 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
   #endif
 
   i2c_param_config(I2C_NUM_0, &conf);
-  esp_err_t i2c_driver = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
+  esp_err_t i2c_driver =
+    i2c_driver_install(I2C_NUM_0, conf.mode, I2C_MASTER_RX_BUF_DISABLE,
+                       I2C_MASTER_TX_BUF_DISABLE, 0);
   if (i2c_driver == ESP_OK) {
     ESP_LOGI(TAG, "i2c_driver started correctly");
   } else {
@@ -83,7 +84,7 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
 
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
-  io_conf.intr_type    = GPIO_INTR_POSEDGE;
+  io_conf.intr_type    = GPIO_INTR_ANYEDGE;
   io_conf.pin_bit_mask = 1ULL << CONFIG_LV_TOUCH_INT;
   io_conf.mode         = GPIO_MODE_INPUT;
   io_conf.pull_down_en = (gpio_pulldown_t)0;  // disable pull-down mode
@@ -96,17 +97,17 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
   return true;
 }
 
-void L58Touch::registerTouchInterruptHandler(TouchInterruptHandler* fn) {
+void CF1133Touch::registerTouchInterruptHandler(TouchInterruptHandler* fn) {
   _touchInterruptHandler = fn;
 }
 
-TPoint L58Touch::loop() {
+CF1133TPoint CF1133Touch::loop() {
   _point = processTouch();
   return _point;
 }
 
-TPoint L58Touch::processTouch() {
-  TPoint point;
+CF1133TPoint CF1133Touch::processTouch() {
+  CF1133TPoint point;
   point.x     = lastX;
   point.y     = lastY;
   point.event = lastEvent;
@@ -115,12 +116,11 @@ TPoint L58Touch::processTouch() {
     interrupt_trigger = 0;
     point             = scanPoint();
     lastEvent         = point.event;
+    ESP_LOGI(TAG, "processTouch x: %d, y: %d, event: %d", point.x, point.y,
+             point.event);
 
     /**
      * lastEvent=0 means released from TP
-     *
-     * L68 default return (0,0) when released, but this will case lvgl error, such as dropdown cannot get currect value: https://forum.lvgl.io/t/item-in-the-dropdown-list-is-not-selected/5381
-     *
      */
     if (lastEvent == 0 && !point.x && !point.y) {
       point.x = lastX;
@@ -129,79 +129,82 @@ TPoint L58Touch::processTouch() {
       lastX = point.x;
       lastY = point.y;
     }
+  } else {
+    // ESP_LOGI(TAG, "interrupt_trigger=0");
   }
 
   return point;
 }
 
-TPoint L58Touch::scanPoint() {
-  TPoint  point{0, 0, 0};
-  uint8_t buf[7] = {0};
+CF1133TPoint CF1133Touch::scanPoint() {
+  CF1133TPoint point{0, 0, 0};
 
-  buf[0] = 0xD0;
-  buf[1] = 0x00;
-  esp_utils::i2c_write_and_read(L58_ADDR, buf[0], buf + 1, 1, buf, 7,
-                                TOUCH_I2C_TIMEOUT);
-  uint16_t x     = (uint16_t)((buf[1] << 4) | ((buf[3] >> 4) & 0x0F));
-  uint16_t y     = (uint16_t)((buf[2] << 4) | (buf[3] & 0x0F));
-  uint8_t  event = (buf[0] & 0x0F) >> 1;
-  switch (_rotation) {
-    // 0- no rotation: Works OK inverting Y axis
-    case 0:
-      break;
+  static uint16_t pre_index   = 0;
+  auto            max_touches = 1;
 
-    case 1:
-      swap(x, y);
-      x = _touch_height - x;
-      break;
-
-    case 2:
-      x = _touch_width - x;
-      break;
-
-    case 3:
-      swap(x, y);
-      break;
+  uint8_t buf[max_touches * 4 + 1];
+  auto ret = esp_utils::i2c_read(CF1133_ADDR, 0x11, buf, max_touches * 4 + 1);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "read finger error (%d)", ret);
+    return point;
   }
 
-  if (_touch_width != L58_TOUCH_FIRMWARE_WIDTH ||
-      _touch_height != L58_TOUCH_FIRMWARE_HEIGHT) {
-    x = ((uint32_t)x) * ((uint32_t)_touch_width) / L58_TOUCH_FIRMWARE_WIDTH;
-    y = ((uint32_t)y) * ((uint32_t)_touch_height) / L58_TOUCH_FIRMWARE_HEIGHT;
+  auto i = 0;  // touch index
+  if (buf[1 + 4 * i] & 0x80) {
+    point.x = (int)(buf[1 + i * 4] & 0x70) << 4 | buf[1 + i * 4 + 1];
+    point.y = (int)(buf[1 + i * 4] & 0x0F) << 8 | buf[1 + i * 4 + 2];
+    pre_index |= 0x01 << i;
+    point.event = 1;
+  } else if (pre_index & (0x01 << i)) {
+    pre_index &= ~(0x01 << i);
+    point.event = 0;
   }
 
-  point = {x, y, event};
   return point;
 }
 
-void L58Touch::setRotation(uint8_t rotation) {
+void CF1133Touch::setRotation(uint8_t rotation) {
   _rotation = rotation;
 }
 
-void L58Touch::setTouchWidth(uint16_t width) {
+void CF1133Touch::setTouchWidth(uint16_t width) {
   ESP_LOGI(TAG, "touch width: %d", width);
   _touch_width = width;
 }
 
-void L58Touch::setTouchHeight(uint16_t height) {
+void CF1133Touch::setTouchHeight(uint16_t height) {
   ESP_LOGI(TAG, "touch height: %d", height);
   _touch_height = height;
 }
 
-void L58Touch::clearFlags() {
-  uint8_t reg    = 0xD0;
-  uint8_t buf[2] = {0X00, 0XAB};
-  esp_utils::i2c_write(L58_ADDR, reg, buf, sizeof(buf), TOUCH_I2C_TIMEOUT);
-}
-
-void L58Touch::sleep(int32_t try_count) {
-  uint8_t reg    = 0xD1;
-  uint8_t buf[1] = {0X05};
+void CF1133Touch::sleep(int32_t try_count) {
+  uint8_t reg    = 0x2;
+  uint8_t buf[1] = {0xA};
 
   esp_err_t res;
   while (true) {
-    res =
-      esp_utils::i2c_write(L58_ADDR, reg, buf, sizeof(buf), TOUCH_I2C_TIMEOUT);
+    res = esp_utils::i2c_write(CF1133_ADDR, reg, buf, sizeof(buf),
+                               TOUCH_I2C_TIMEOUT);
+    if (res == ESP_OK) {
+      break;
+    }
+    try_count--;
+    if (try_count == 0) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(300));
+  }
+  ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
+}
+
+void CF1133Touch::wakeup(int32_t try_count) {
+  uint8_t reg    = 0x2;
+  uint8_t buf[1] = {0xA};
+
+  esp_err_t res;
+  while (true) {
+    res = esp_utils::i2c_write(CF1133_ADDR, reg, buf, sizeof(buf),
+                               TOUCH_I2C_TIMEOUT);
     if (res == ESP_OK) {
       break;
     }
