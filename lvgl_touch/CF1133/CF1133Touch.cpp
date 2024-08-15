@@ -4,13 +4,6 @@
 CF1133Touch*       CF1133Touch::_instance = nullptr;
 static const char* TAG                    = "CF1133Touch";
 
-#ifdef CONFIG_IDF_TARGET_ESP32S3
-  // 1000ms will call epdiy crash on s3 board (pca9555_set_value)
-  #define TOUCH_I2C_TIMEOUT 100
-#else
-  #define TOUCH_I2C_TIMEOUT 1000
-#endif
-
 /**
  * Record the interrupt of intPin.
  * When interrupt triggered, set to '1', after used, set to '0'.
@@ -143,7 +136,8 @@ CF1133TPoint CF1133Touch::scanPoint() {
   auto            max_touches = 1;
 
   uint8_t buf[max_touches * 4 + 1];
-  auto ret = esp_utils::i2c_read(CF1133_ADDR, 0x11, buf, max_touches * 4 + 1);
+  auto    ret =
+    esp_utils::i2c_read(CF1133_ADDR, 0x11, buf, max_touches * 4 + 1, 150);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "read finger error (%d)", ret);
     return point;
@@ -178,13 +172,12 @@ void CF1133Touch::setTouchHeight(uint16_t height) {
 }
 
 void CF1133Touch::sleep(int32_t try_count) {
-  uint8_t reg    = 0x2;
-  uint8_t buf[1] = {0xA};
+  uint8_t reg    = 0x02;
+  uint8_t buf[1] = {0x02};
 
   esp_err_t res;
   while (true) {
-    res = esp_utils::i2c_write(CF1133_ADDR, reg, buf, sizeof(buf),
-                               TOUCH_I2C_TIMEOUT);
+    res = esp_utils::i2c_write(CF1133_ADDR, reg, buf, sizeof(buf));
     if (res == ESP_OK) {
       break;
     }
@@ -198,13 +191,12 @@ void CF1133Touch::sleep(int32_t try_count) {
 }
 
 void CF1133Touch::wakeup(int32_t try_count) {
-  uint8_t reg    = 0x2;
-  uint8_t buf[1] = {0xA};
+  uint8_t reg    = 0x02;
+  uint8_t buf[1] = {0x01};
 
   esp_err_t res;
   while (true) {
-    res = esp_utils::i2c_write(CF1133_ADDR, reg, buf, sizeof(buf),
-                               TOUCH_I2C_TIMEOUT);
+    res = esp_utils::i2c_write(CF1133_ADDR, reg, buf, sizeof(buf));
     if (res == ESP_OK) {
       break;
     }
