@@ -77,7 +77,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
 
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
-  io_conf.intr_type    = GPIO_INTR_ANYEDGE;
+  io_conf.intr_type    = GPIO_INTR_POSEDGE;
   io_conf.pin_bit_mask = 1ULL << CONFIG_LV_TOUCH_INT;
   io_conf.mode         = GPIO_MODE_INPUT;
   io_conf.pull_down_en = (gpio_pulldown_t)0;  // disable pull-down mode
@@ -206,5 +206,5 @@ void CF1133Touch::wakeup(int32_t try_count) {
     }
     vTaskDelay(pdMS_TO_TICKS(300));
   }
-  ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
+  ESP_LOGW(TAG, "wakeup: %d; try count: %d", res, try_count);
 }
