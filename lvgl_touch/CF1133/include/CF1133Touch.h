@@ -49,8 +49,9 @@ class CF1133Touch {
   CF1133TPoint processTouch();
 
   // Pending implementation. How much x->touch y↓touch is placed (In case is smaller than display)
-  void sleep(int32_t try_count = 10);
-  void wakeup(int32_t try_count = 10);
+  void    sleep(int32_t try_count = 10);
+  void    wakeup(int32_t try_count = 10);
+  uint8_t readStatus();
 
   // handler when the intPin interrupted, can only do very little, and `can't call log`.
   static void registerTouchInterruptHandler(TouchInterruptHandler* fn);

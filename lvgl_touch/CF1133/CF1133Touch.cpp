@@ -11,7 +11,7 @@ static const char* TAG                    = "CF1133Touch";
  *
  * Default '1' to force read data at the first time.
  */
-static uint8_t                interrupt_trigger      = 1;
+static uint8_t                interrupt_trigger      = 0;
 static TouchInterruptHandler* _touchInterruptHandler = nullptr;
 
 // touch interrupt handler
@@ -55,8 +55,10 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   io_conf.intr_type    = GPIO_INTR_POSEDGE;
   io_conf.pin_bit_mask = 1ULL << CONFIG_LV_TOUCH_INT;
   io_conf.mode         = GPIO_MODE_INPUT;
-  io_conf.pull_down_en = (gpio_pulldown_t)0;  // disable pull-down mode
-  io_conf.pull_up_en   = (gpio_pullup_t)1;  // pull-up mode
+  // must set enable for inited on 0 level
+  io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
+  // pull-up mode for touch interrupt
+  io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
   gpio_config(&io_conf);
 
   // INT gpio interrupt handler
@@ -193,4 +195,15 @@ void CF1133Touch::wakeup(int32_t try_count) {
     vTaskDelay(pdMS_TO_TICKS(300));
   }
   ESP_LOGW(TAG, "wakeup: %d; try count: %d", res, try_count);
+}
+
+uint8_t CF1133Touch::readStatus() {
+  uint8_t reg = 0x01;
+  uint8_t buf[1];
+  auto    ret = esp_utils::i2c_read(CF1133_ADDR, reg, buf, 1);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "readStatus error (%d)", ret);
+    return 0;
+  }
+  return buf[0];
 }
