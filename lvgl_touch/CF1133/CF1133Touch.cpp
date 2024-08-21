@@ -1,5 +1,6 @@
 #include "CF1133Touch.h"
 #include "esp_utils.h"
+#include "lvgl.h"
 
 CF1133Touch*       CF1133Touch::_instance = nullptr;
 static const char* TAG                    = "CF1133Touch";
@@ -49,32 +50,6 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
            "receive the width / height so touch cannot be rotation aware");
   }
 
-// s3 board will init by epdiy
-#ifndef CONFIG_IDF_TARGET_ESP32S3
-  i2c_config_t conf;
-  conf.mode             = I2C_MODE_MASTER;
-  conf.sda_io_num       = (gpio_num_t)CONFIG_LV_TOUCH_I2C_SDA;
-  conf.sda_pullup_en    = GPIO_PULLUP_ENABLE;
-  conf.scl_io_num       = (gpio_num_t)CONFIG_LV_TOUCH_I2C_SCL;
-  conf.scl_pullup_en    = GPIO_PULLUP_ENABLE;
-  conf.master.clk_speed = 50000;
-
-  #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 3, 0)
-  // !< Optional, you can use I2C_SCLK_SRC_FLAG_* flags to choose i2c source clock here.
-  conf.clk_flags = 0;
-  #endif
-
-  i2c_param_config(I2C_NUM_0, &conf);
-  esp_err_t i2c_driver =
-    i2c_driver_install(I2C_NUM_0, conf.mode, I2C_MASTER_RX_BUF_DISABLE,
-                       I2C_MASTER_TX_BUF_DISABLE, 0);
-  if (i2c_driver == ESP_OK) {
-    ESP_LOGI(TAG, "i2c_driver started correctly");
-  } else {
-    ESP_LOGI(TAG, "i2c_driver error: %d", i2c_driver);
-  }
-#endif
-
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
   io_conf.intr_type    = GPIO_INTR_POSEDGE;
@@ -95,33 +70,44 @@ void CF1133Touch::registerTouchInterruptHandler(TouchInterruptHandler* fn) {
 }
 
 CF1133TPoint CF1133Touch::loop() {
-  _point = processTouch();
-  return _point;
+  return processTouch();
 }
 
 CF1133TPoint CF1133Touch::processTouch() {
   CF1133TPoint point;
-  point.x     = lastX;
-  point.y     = lastY;
-  point.event = lastEvent;
+  point.x     = lastTouch.x;
+  point.y     = lastTouch.y;
+  point.event = lastTouch.event;
 
   if (interrupt_trigger == 1) {
     interrupt_trigger = 0;
     point             = scanPoint();
-    lastEvent         = point.event;
+
+    clock_t timestamp = clock();
+
+    if (point.event == 0) {
+      if (!point.x && !point.y) {
+        // release event may trigger at (0, 0) for L58
+        point.x = lastTouch.x;
+        point.y = lastTouch.y;
+      } else if ((lastTouch.x != point.x && lastTouch.y != point.y) ||
+                 timestamp - lastTouch.timestamp > 2000) {
+        // repair fast click: can only read release event, so give it a pressed event
+        point.event = 1;
+        ESP_LOGI(TAG, "processTouch x: %d, y: %d, repaire event to [1]",
+                 point.x, point.y);
+
+        // to read again for released event
+        lv_async_call([](void* arg) { gpio_isr_handler(NULL); }, nullptr);
+      }
+    }
     ESP_LOGI(TAG, "processTouch x: %d, y: %d, event: %d", point.x, point.y,
              point.event);
 
-    /**
-     * lastEvent=0 means released from TP
-     */
-    if (lastEvent == 0 && !point.x && !point.y) {
-      point.x = lastX;
-      point.y = lastY;
-    } else {
-      lastX = point.x;
-      lastY = point.y;
-    }
+    lastTouch.x         = point.x;
+    lastTouch.y         = point.y;
+    lastTouch.event     = point.event;
+    lastTouch.timestamp = timestamp;
   } else {
     // ESP_LOGI(TAG, "interrupt_trigger=0");
   }
@@ -130,7 +116,7 @@ CF1133TPoint CF1133Touch::processTouch() {
 }
 
 CF1133TPoint CF1133Touch::scanPoint() {
-  CF1133TPoint point{0, 0, 0};
+  CF1133TPoint point{0, 0, 0, 0};
 
   static uint16_t pre_index   = 0;
   auto            max_touches = 1;
@@ -143,10 +129,10 @@ CF1133TPoint CF1133Touch::scanPoint() {
     return point;
   }
 
-  auto i = 0;  // touch index
+  auto i  = 0;  // touch index
+  point.x = (int)(buf[1 + i * 4] & 0x70) << 4 | buf[1 + i * 4 + 1];
+  point.y = (int)(buf[1 + i * 4] & 0x0F) << 8 | buf[1 + i * 4 + 2];
   if (buf[1 + 4 * i] & 0x80) {
-    point.x = (int)(buf[1 + i * 4] & 0x70) << 4 | buf[1 + i * 4 + 1];
-    point.y = (int)(buf[1 + i * 4] & 0x0F) << 8 | buf[1 + i * 4 + 2];
     pre_index |= 0x01 << i;
     point.event = 1;
   } else if (pre_index & (0x01 << i)) {

@@ -67,6 +67,7 @@ int st_i2c_upg_read_bytes(unsigned char addr, unsigned char* rxbuf, int len) {
   }
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (ST_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
+  ets_delay_us(150);
   i2c_master_write_byte(cmd, addr, true);
   i2c_master_stop(cmd);
 
@@ -86,10 +87,12 @@ int st_i2c_upg_read_bytes(unsigned char addr, unsigned char* rxbuf, int len) {
   }
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (ST_I2C_ADDR << 1) | I2C_MASTER_READ, true);
+  ets_delay_us(150);
   if (len > 1) {
     i2c_master_read(cmd, rxbuf, len - 1, I2C_MASTER_ACK);
   }
   i2c_master_read_byte(cmd, rxbuf + len - 1, I2C_MASTER_NACK);
+  i2c_master_stop(cmd);
 
   ret = i2c_master_cmd_begin(ST_I2C_NUM, cmd, 1000);
   i2c_cmd_link_delete(cmd);
@@ -134,7 +137,6 @@ int st_irq_on(void) {
 }
 
 void st_msleep(int time) {
-  //   msleep(time);
   vTaskDelay(pdMS_TO_TICKS(time));
 }
 /************************************************************************/
