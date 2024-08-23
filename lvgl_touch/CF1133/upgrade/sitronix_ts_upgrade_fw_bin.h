@@ -39,7 +39,7 @@
 #define ST_ISP_RETRY_MAX 2
 
 // read SITRONIX_DUMP from header file
-#include "./XY-PG601441-6.0_V03_20240820.h"
+#include "./XY-PG601441-6.0_V05_20240823.h"
 
 #ifdef ST_UPGRADE_BY_ISPID
 
