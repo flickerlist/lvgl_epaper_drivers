@@ -18,9 +18,7 @@ static TouchInterruptHandler* _touchInterruptHandler = nullptr;
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
   //   ets_printf("touch interrupt level: %d\n",
   //              gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT));
-  if (interrupt_trigger == 0) {
-    interrupt_trigger = 1;
-  }
+  CF1133Touch::instance()->onTouchIsr();
   if (_touchInterruptHandler) {
     _touchInterruptHandler();
   }
@@ -50,6 +48,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
            "receive the width / height so touch cannot be rotation aware");
   }
 
+#ifdef CONFIG_IDF_TARGET_ESP32
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
   io_conf.intr_type    = GPIO_INTR_POSEDGE;
@@ -63,8 +62,13 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
 
   // INT gpio interrupt handler
   gpio_isr_handler_add((gpio_num_t)CONFIG_LV_TOUCH_INT, gpio_isr_handler, NULL);
+#endif
 
   return true;
+}
+
+void CF1133Touch::onTouchIsr() {
+  interrupt_trigger = 1;
 }
 
 void CF1133Touch::registerTouchInterruptHandler(TouchInterruptHandler* fn) {

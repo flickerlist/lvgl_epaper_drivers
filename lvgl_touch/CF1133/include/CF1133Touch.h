@@ -53,6 +53,8 @@ class CF1133Touch {
   void    wakeup(int32_t try_count = 10);
   uint8_t readStatus();
 
+  void onTouchIsr();
+
   // handler when the intPin interrupted, can only do very little, and `can't call log`.
   static void registerTouchInterruptHandler(TouchInterruptHandler* fn);
 
