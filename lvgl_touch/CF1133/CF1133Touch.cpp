@@ -18,7 +18,7 @@ static TouchInterruptHandler* _touchInterruptHandler = nullptr;
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
   //   ets_printf("touch interrupt level: %d\n",
   //              gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT));
-  CF1133Touch::instance()->onTouchIsr();
+  interrupt_trigger = 1;
   if (_touchInterruptHandler) {
     _touchInterruptHandler();
   }
@@ -48,7 +48,30 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
            "receive the width / height so touch cannot be rotation aware");
   }
 
-#ifdef CONFIG_IDF_TARGET_ESP32
+// s3 board will init by epdiy
+#ifndef CONFIG_IDF_TARGET_ESP32S3
+  i2c_config_t conf;
+  conf.mode             = I2C_MODE_MASTER;
+  conf.sda_io_num       = (gpio_num_t)CONFIG_LV_TOUCH_I2C_SDA;
+  conf.sda_pullup_en    = GPIO_PULLUP_ENABLE;
+  conf.scl_io_num       = (gpio_num_t)CONFIG_LV_TOUCH_I2C_SCL;
+  conf.scl_pullup_en    = GPIO_PULLUP_ENABLE;
+  conf.master.clk_speed = 50000;
+
+  #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 3, 0)
+  // !< Optional, you can use I2C_SCLK_SRC_FLAG_* flags to choose i2c source clock here.
+  conf.clk_flags = 0;
+  #endif
+
+  i2c_param_config(I2C_NUM_0, &conf);
+  esp_err_t i2c_driver = i2c_driver_install(I2C_NUM_0, conf.mode, 0, 0, 0);
+  if (i2c_driver == ESP_OK) {
+    ESP_LOGI(TAG, "i2c_driver started correctly");
+  } else {
+    ESP_LOGI(TAG, "i2c_driver error: %d", i2c_driver);
+  }
+#endif
+
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
   io_conf.intr_type    = GPIO_INTR_POSEDGE;
@@ -62,13 +85,8 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
 
   // INT gpio interrupt handler
   gpio_isr_handler_add((gpio_num_t)CONFIG_LV_TOUCH_INT, gpio_isr_handler, NULL);
-#endif
 
   return true;
-}
-
-void CF1133Touch::onTouchIsr() {
-  interrupt_trigger = 1;
 }
 
 void CF1133Touch::registerTouchInterruptHandler(TouchInterruptHandler* fn) {
