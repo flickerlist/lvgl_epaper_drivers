@@ -84,8 +84,10 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
   io_conf.intr_type    = GPIO_INTR_POSEDGE;
   io_conf.pin_bit_mask = 1ULL << CONFIG_LV_TOUCH_INT;
   io_conf.mode         = GPIO_MODE_INPUT;
-  io_conf.pull_down_en = (gpio_pulldown_t)0;  // disable pull-down mode
-  io_conf.pull_up_en   = (gpio_pullup_t)1;  // pull-up mode
+  // must set enable for inited on 0 level
+  io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
+  // pull-up mode for touch interrupt
+  io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&io_conf);
 
   // INT gpio interrupt handler

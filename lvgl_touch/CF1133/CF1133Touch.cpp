@@ -80,7 +80,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   // must set enable for inited on 0 level
   io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
   // pull-up mode for touch interrupt
-  io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+  io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&io_conf);
 
   // INT gpio interrupt handler
