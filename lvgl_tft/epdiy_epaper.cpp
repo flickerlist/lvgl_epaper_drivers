@@ -345,6 +345,22 @@ void epdiy_repaint_all() {
 #endif
 }
 
+void epdiy_set_white(EpdRect area) {
+  auto x1      = area.x;
+  auto x2      = area.x + area.width;
+  auto int8_x1 = x1 % 2 == 1 ? x1 / 2 + 1 : x1 / 2;  // 5 -> 3
+  auto int8_x2 = x2 / 2;  // 9 -> 4
+  for (int y = area.y; y < area.y + area.height; y++) {
+    memset(hl.back_fb + epd_width() / 2 * y + int8_x1, 0xFF, int8_x2 - int8_x1);
+    if (x1 % 2 == 1) {
+      *(hl.back_fb + epd_width() / 2 * y + x1) |= 0x0F;
+    }
+    if (x2 % 2 == 1) {
+      *(hl.back_fb + epd_width() / 2 * y + x2 / 2) |= 0xF0;
+    }
+  }
+}
+
 void epdiy_repaint_full_screen() {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 
@@ -367,6 +383,8 @@ void epdiy_repaint_full_screen() {
 void epdiy_repaint(EpdRect area) {
   epd_poweron();
 #ifdef CONFIG_IDF_TARGET_ESP32S3
+  epdiy_set_white(area);
+  epd_clear_area_cycles(area, 1, _clear_cycle_time);
   epd_hl_update_area(&hl, updateMode, temperature, area);
 #else
   epd_clear_area_cycles(area, 1, _clear_cycle_time);
