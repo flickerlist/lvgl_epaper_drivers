@@ -134,9 +134,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   #endif
   if (xSemaphoreTake(paint_queue_xMutex, pdMS_TO_TICKS(30))) {
     paint_queue.push_back(ptr);
+    vTaskResume(_paint_task_handle);
     xSemaphoreGive(paint_queue_xMutex);
+  } else {
+    vTaskResume(_paint_task_handle);
   }
-  vTaskResume(_paint_task_handle);
 
 #else
 
@@ -319,8 +321,19 @@ bool epdiy_check_pause() {
   }
   if (_paint_empty_run_count >= 3) {
     _paint_empty_run_count = -1;
-    vTaskSuspend(_paint_task_handle);
-    return true;
+    if (xSemaphoreTake(paint_queue_xMutex, pdMS_TO_TICKS(30))) {
+      // recheck in xSemaphoreTake for safe `vTaskSuspend`
+      if (paint_queue.size() || whole_repainting) {
+        xSemaphoreGive(paint_queue_xMutex);
+        return false;
+      } else {
+        vTaskSuspend(_paint_task_handle);
+        xSemaphoreGive(paint_queue_xMutex);
+        return true;
+      }
+    } else {
+      return false;
+    }
   } else if (_paint_empty_run_count == -1) {
     return true;
   }
@@ -346,17 +359,23 @@ void epdiy_repaint_all() {
 }
 
 void epdiy_set_white(EpdRect area) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  int width = epd_width();
+#else
+  int width = epd_rotated_display_width();
+#endif
+
   auto x1      = area.x;
   auto x2      = area.x + area.width;
   auto int8_x1 = x1 % 2 == 1 ? x1 / 2 + 1 : x1 / 2;  // 5 -> 3
   auto int8_x2 = x2 / 2;  // 9 -> 4
   for (int y = area.y; y < area.y + area.height; y++) {
-    memset(hl.back_fb + epd_width() / 2 * y + int8_x1, 0xFF, int8_x2 - int8_x1);
+    memset(hl.back_fb + width / 2 * y + int8_x1, 0xFF, int8_x2 - int8_x1);
     if (x1 % 2 == 1) {
-      *(hl.back_fb + epd_width() / 2 * y + x1) |= 0x0F;
+      *(hl.back_fb + width / 2 * y + x1) |= 0x0F;
     }
     if (x2 % 2 == 1) {
-      *(hl.back_fb + epd_width() / 2 * y + x2 / 2) |= 0xF0;
+      *(hl.back_fb + width / 2 * y + x2 / 2) |= 0xF0;
     }
   }
 }
