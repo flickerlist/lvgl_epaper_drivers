@@ -62,6 +62,9 @@ void epdiy_repaint_all();
  */
 bool epdiy_check_pause();
 
+/* set area to white */
+void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time);
+
 /* refresh area */
 void epdiy_repaint(EpdRect area);
 

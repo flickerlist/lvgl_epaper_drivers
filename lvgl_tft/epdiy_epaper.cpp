@@ -380,6 +380,14 @@ void epdiy_set_white(EpdRect area) {
   }
 }
 
+/* set area to white */
+void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  epdiy_set_white(area);
+  epd_clear_area_cycles(area, clear_count, clear_cycle_time);
+#endif
+}
+
 void epdiy_repaint_full_screen() {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 
@@ -402,8 +410,7 @@ void epdiy_repaint_full_screen() {
 void epdiy_repaint(EpdRect area) {
   epd_poweron();
 #ifdef CONFIG_IDF_TARGET_ESP32S3
-  epdiy_set_white(area);
-  epd_clear_area_cycles(area, 1, _clear_cycle_time);
+  epdiy_clear_to_white(area, 1, _clear_cycle_time);
   epd_hl_update_area(&hl, updateMode, temperature, area);
 #else
   epd_clear_area_cycles(area, 1, _clear_cycle_time);
