@@ -14,6 +14,16 @@ static const char* TAG                 = "L58Touch";
   #define TOUCH_I2C_TIMEOUT 1000
 #endif
 
+// L58 has some i2c problems, so cannot use common i2c utils functions
+esp_err_t _l58_i2c_write_and_read(uint8_t    addr,
+                                  int        reg,
+                                  uint8_t*   write_data,
+                                  int        write_len,
+                                  uint8_t*   read_data,
+                                  int        read_len,
+                                  uint       wait_ms,
+                                  i2c_port_t port = I2C_NUM_0);
+
 /**
  * Record the interrupt of intPin.
  * When interrupt triggered, set to '1', after used, set to '0'.
@@ -140,8 +150,8 @@ TPoint L58Touch::scanPoint() {
 
   buf[0] = 0xD0;
   buf[1] = 0x00;
-  esp_utils::i2c_write_and_read(L58_ADDR, buf[0], buf + 1, 1, buf, 7,
-                                TOUCH_I2C_TIMEOUT);
+  _l58_i2c_write_and_read(L58_ADDR, buf[0], buf + 1, 1, buf, 7,
+                          TOUCH_I2C_TIMEOUT);
   uint16_t x     = (uint16_t)((buf[1] << 4) | ((buf[3] >> 4) & 0x0F));
   uint16_t y     = (uint16_t)((buf[2] << 4) | (buf[3] & 0x0F));
   uint8_t  event = (buf[0] & 0x0F) >> 1;
@@ -212,4 +222,52 @@ void L58Touch::sleep(int32_t try_count) {
     vTaskDelay(pdMS_TO_TICKS(300));
   }
   ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
+}
+
+esp_err_t _l58_i2c_write_and_read(uint8_t    addr,
+                                  int        reg,
+                                  uint8_t*   write_data,
+                                  int        write_len,
+                                  uint8_t*   read_data,
+                                  int        read_len,
+                                  uint       wait_ms,
+                                  i2c_port_t port) {
+  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  if (cmd == NULL) {
+    ESP_LOGE("ESPUtils_I2C", "insufficient memory for i2c_read");
+  }
+  i2c_master_start(cmd);
+  i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+  i2c_master_write_byte(cmd, reg, ACK_CHECK_EN);
+  if (write_len > 0 && write_data != NULL) {
+    i2c_master_write(cmd, write_data, write_len, ACK_CHECK_EN);
+  }
+  i2c_master_stop(cmd);
+
+  esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(wait_ms));
+  if (ret != ESP_OK) {
+    ESP_LOGE("ESPUtils_I2C_L58", "i2c_master_cmd_begin on write error: %d",
+             ret);
+    return ret;
+  }
+  i2c_cmd_link_delete(cmd);
+
+  cmd = i2c_cmd_link_create();
+  if (cmd == NULL) {
+    ESP_LOGE("ESPUtils_I2C_L58", "insufficient memory for i2c_read");
+  }
+  i2c_master_start(cmd);
+  i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_READ, ACK_CHECK_EN);
+  if (read_len > 1) {
+    i2c_master_read(cmd, read_data, read_len - 1, I2C_MASTER_ACK);
+  }
+  i2c_master_read_byte(cmd, read_data + read_len - 1, I2C_MASTER_NACK);
+  i2c_master_stop(cmd);
+
+  ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(wait_ms));
+  i2c_cmd_link_delete(cmd);
+  if (ret != ESP_OK) {
+    ESP_LOGE("ESPUtils_I2C_L58", "i2c_master_cmd_begin on read error: %d", ret);
+  }
+  return ret;
 }
