@@ -24,7 +24,7 @@ struct CF1133TPoint {
   uint16_t x;
   uint16_t y;
   uint8_t  event;
-  clock_t  timestamp;
+  int64_t  timestamp;
 };
 
 // handler when the intPin interrupted
@@ -62,8 +62,6 @@ class CF1133Touch {
   void setTouchHeight(uint16_t height);
 
  private:
-  CF1133TPoint scanPoint();
-
   static CF1133Touch* _instance;
   uint8_t             _intPin;
 

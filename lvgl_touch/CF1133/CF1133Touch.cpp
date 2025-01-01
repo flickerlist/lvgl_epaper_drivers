@@ -11,17 +11,24 @@ static const char* TAG                    = "CF1133Touch";
  *
  * Default '1' to force read data at the first time.
  */
-static uint8_t                interrupt_trigger      = 0;
-static TouchInterruptHandler* _touchInterruptHandler = nullptr;
+static uint8_t                cf1133_interrupt_trigger = 0;
+static TouchInterruptHandler* _touchInterruptHandler   = nullptr;
+static CF1133TPoint           _readedPoint;
+
+esp_err_t scanPoint(CF1133TPoint& point);
+
+// a new task for cf1133 interrupt
+TaskHandle_t _cf1133_task_handle;
+void         _cf1133_task_cb(void* arg);
 
 // touch interrupt handler
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
-  //   ets_printf("touch interrupt level: %d\n",
-  //              gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT));
-  interrupt_trigger = 1;
-  if (_touchInterruptHandler) {
-    _touchInterruptHandler();
-  }
+  // ets_printf("touch interrupt level: %d\n",
+  //            gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT));
+  cf1133_interrupt_trigger = 1;
+
+  // to read cf1133 point immediately
+  vTaskResume(_cf1133_task_handle);
 }
 
 CF1133Touch::CF1133Touch(int8_t intPin) {
@@ -86,6 +93,10 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   // INT gpio interrupt handler
   gpio_isr_handler_add((gpio_num_t)CONFIG_LV_TOUCH_INT, gpio_isr_handler, NULL);
 
+  // a new task for cf1133 interrupt
+  xTaskCreatePinnedToCore(&_cf1133_task_cb, "cf1133_task_cb", 1024 * 4, NULL,
+                          configMAX_PRIORITIES - 1, &_cf1133_task_handle, 1);
+
   return true;
 }
 
@@ -98,16 +109,13 @@ CF1133TPoint CF1133Touch::loop() {
 }
 
 CF1133TPoint CF1133Touch::processTouch() {
-  CF1133TPoint point;
-  point.x     = lastTouch.x;
-  point.y     = lastTouch.y;
-  point.event = lastTouch.event;
+  CF1133TPoint point = lastTouch;
 
-  if (interrupt_trigger == 1) {
-    interrupt_trigger = 0;
-    point             = scanPoint();
+  if (_readedPoint.timestamp > 0) {
+    point                  = _readedPoint;
+    _readedPoint.timestamp = 0;
 
-    clock_t timestamp = clock();
+    int64_t timestamp = esp_timer_get_time();
 
     if (point.event == 0) {
       if (!point.x && !point.y) {
@@ -115,7 +123,7 @@ CF1133TPoint CF1133Touch::processTouch() {
         point.x = lastTouch.x;
         point.y = lastTouch.y;
       } else if ((lastTouch.x != point.x && lastTouch.y != point.y) ||
-                 timestamp - lastTouch.timestamp > 2000) {
+                 timestamp - lastTouch.timestamp > 2 * 1000 * 1000) {
         // repair fast click: can only read release event, so give it a pressed event
         point.event = 1;
         ESP_LOGI(TAG, "processTouch x: %d, y: %d, repaire event to [1]",
@@ -133,15 +141,13 @@ CF1133TPoint CF1133Touch::processTouch() {
     lastTouch.event     = point.event;
     lastTouch.timestamp = timestamp;
   } else {
-    // ESP_LOGI(TAG, "interrupt_trigger=0");
+    // ESP_LOGI(TAG, "cf1133_interrupt_trigger=0");
   }
 
   return point;
 }
 
-CF1133TPoint CF1133Touch::scanPoint() {
-  CF1133TPoint point{0, 0, 0, 0};
-
+esp_err_t scanPoint(CF1133TPoint& point) {
   static uint16_t pre_index   = 0;
   auto            max_touches = 1;
 
@@ -150,7 +156,7 @@ CF1133TPoint CF1133Touch::scanPoint() {
     esp_utils::i2c_read(CF1133_ADDR, 0x11, buf, max_touches * 4 + 1, 150);
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "read finger error (%d)", ret);
-    return point;
+    return ret;
   }
 
   auto i  = 0;  // touch index
@@ -164,7 +170,7 @@ CF1133TPoint CF1133Touch::scanPoint() {
     point.event = 0;
   }
 
-  return point;
+  return ESP_OK;
 }
 
 void CF1133Touch::setRotation(uint8_t rotation) {
@@ -198,6 +204,43 @@ void CF1133Touch::sleep(int32_t try_count) {
     vTaskDelay(pdMS_TO_TICKS(300));
   }
   ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
+}
+
+// a new task for cf1133 interrupt
+bool _cf1133_task_inited = false;
+void _cf1133_task_cb(void* arg) {
+  while (true) {
+    if (!_cf1133_task_inited) {
+      _cf1133_task_inited = true;
+      vTaskSuspend(_cf1133_task_handle);
+    }
+    ets_delay_us(100);
+
+    if (cf1133_interrupt_trigger) {
+      auto err = scanPoint(_readedPoint);
+      ESP_LOGI(TAG, "readedPoint, err: %d, point: %d, %d, %d", err,
+               _readedPoint.x, _readedPoint.y, _readedPoint.event);
+      if (err == ESP_OK) {
+        cf1133_interrupt_trigger = 0;
+        _readedPoint.timestamp   = esp_timer_get_time();
+        if (_touchInterruptHandler) {
+          _touchInterruptHandler();
+        }
+      } else {
+        // if read error, wait 100ms and try again when next loop
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+      }
+    } else {
+      ESP_LOGI(TAG, "no need to readPoint");
+    }
+
+    ets_delay_us(100);
+
+    if (!cf1133_interrupt_trigger) {
+      ESP_LOGI(TAG, "vTaskSuspend Touch task");
+      vTaskSuspend(_cf1133_task_handle);
+    }
+  }
 }
 
 void CF1133Touch::wakeup(int32_t try_count) {

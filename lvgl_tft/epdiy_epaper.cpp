@@ -46,7 +46,9 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 
 /* Display initialization routine */
 void epdiy_init(void) {
+#ifdef USE_PARALLEL_PAINT
   paint_queue_xMutex = xSemaphoreCreateMutex();
+#endif
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   epd_set_rotation(EPD_ROT_LANDSCAPE);
