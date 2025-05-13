@@ -28,7 +28,7 @@ static void IRAM_ATTR gpio_isr_handler(void* arg) {
   cf1133_interrupt_trigger = 1;
 
   // to read cf1133 point immediately
-  vTaskResume(_cf1133_task_handle);
+  xTaskResumeFromISR(_cf1133_task_handle);
 }
 
 CF1133Touch::CF1133Touch(int8_t intPin) {
