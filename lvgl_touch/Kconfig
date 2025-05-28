@@ -110,14 +110,6 @@ menu "LVGL Touch controller"
             default 14
             help
             Configure the I2C touchpanel SCL pin here.
-        config LV_TOUCH_INT
-            int "GPIO for Interrupt pin (INT)"
-            range 0 39 if IDF_TARGET_ESP32
-            range 0 43 if IDF_TARGET_ESP32S2
-
-            default 13
-            help
-            Configure the INT Pin (Low on event)
     endmenu
 
     menu "Touchpanel (XPT2046) Pin Assignments"

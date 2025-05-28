@@ -33,6 +33,10 @@ struct TPoint {
 // handler when the intPin interrupted
 typedef void TouchInterruptHandler();
 
+// custom interrupt pin
+void   setL58TouchInt(int8_t intPin);
+int8_t getL58TouchInt();
+
 class L58Touch {
   typedef struct {
     uint8_t  id;

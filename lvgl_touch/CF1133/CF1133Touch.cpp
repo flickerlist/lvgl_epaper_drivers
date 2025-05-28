@@ -24,16 +24,24 @@ void         _cf1133_task_cb(void* arg);
 // touch interrupt handler
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
   // ets_printf("touch interrupt level: %d\n",
-  //            gpio_get_level((gpio_num_t)CONFIG_LV_TOUCH_INT));
+  //            gpio_get_level((gpio_num_t)getCF1133TouchInt()));
   cf1133_interrupt_trigger = 1;
 
   // to read cf1133 point immediately
   xTaskResumeFromISR(_cf1133_task_handle);
 }
 
-CF1133Touch::CF1133Touch(int8_t intPin) {
+// custom interrupt pin
+static int8_t _touchPin;
+void          setCF1133TouchInt(int8_t intPin) {
+  _touchPin = intPin;
+}
+int8_t getCF1133TouchInt() {
+  return _touchPin;
+}
+
+CF1133Touch::CF1133Touch() {
   _instance = this;
-  _intPin   = intPin;
 }
 
 // Destructor does nothing for now
@@ -45,7 +53,7 @@ CF1133Touch* CF1133Touch::instance() {
 
 bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   ESP_LOGI(TAG, "I2C SDA:%d SCL:%d INT:%d", CONFIG_LV_TOUCH_I2C_SDA,
-           CONFIG_LV_TOUCH_I2C_SCL, _intPin);
+           CONFIG_LV_TOUCH_I2C_SCL, getCF1133TouchInt());
 
   _touch_width  = width;
   _touch_height = height;
@@ -82,7 +90,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
   io_conf.intr_type    = GPIO_INTR_POSEDGE;
-  io_conf.pin_bit_mask = 1ULL << CONFIG_LV_TOUCH_INT;
+  io_conf.pin_bit_mask = 1ULL << getCF1133TouchInt();
   io_conf.mode         = GPIO_MODE_INPUT;
   // must set enable for inited on 0 level
   io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
@@ -91,7 +99,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   gpio_config(&io_conf);
 
   // INT gpio interrupt handler
-  gpio_isr_handler_add((gpio_num_t)CONFIG_LV_TOUCH_INT, gpio_isr_handler, NULL);
+  gpio_isr_handler_add((gpio_num_t)getCF1133TouchInt(), gpio_isr_handler, NULL);
 
   // a new task for cf1133 interrupt
   xTaskCreatePinnedToCore(&_cf1133_task_cb, "cf1133_task_cb", 1024 * 4, NULL,

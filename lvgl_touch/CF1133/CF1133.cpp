@@ -15,7 +15,7 @@
 
 #define TAG "CF1133"
 
-CF1133Touch touch(CONFIG_LV_TOUCH_INT);
+CF1133Touch touch;
 
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   #include <epdiy.h>

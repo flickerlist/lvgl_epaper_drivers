@@ -30,6 +30,10 @@ struct CF1133TPoint {
 // handler when the intPin interrupted
 typedef void TouchInterruptHandler();
 
+// custom interrupt pin
+void   setCF1133TouchInt(int8_t intPin);
+int8_t getCF1133TouchInt();
+
 class CF1133Touch {
   typedef struct {
     uint8_t  id;
@@ -39,7 +43,7 @@ class CF1133Touch {
   } TouchData_t;
 
  public:
-  CF1133Touch(int8_t intPin);
+  CF1133Touch();
   ~CF1133Touch();
 
   static CF1133Touch* instance();
@@ -63,7 +67,6 @@ class CF1133Touch {
 
  private:
   static CF1133Touch* _instance;
-  uint8_t             _intPin;
 
   // Make touch rotation aware:
   uint8_t  _rotation     = 0;

@@ -41,9 +41,17 @@ static void IRAM_ATTR gpio_isr_handler(void* arg) {
   }
 }
 
-L58Touch::L58Touch(int8_t intPin) {
+// custom interrupt pin
+static int8_t _touchPin;
+void          setL58TouchInt(int8_t intPin) {
+  _touchPin = intPin;
+}
+int8_t getL58TouchInt() {
+  return _touchPin;
+}
+
+L58Touch::L58Touch() {
   _instance = this;
-  _intPin   = intPin;
 }
 
 // Destructor does nothing for now
@@ -55,7 +63,7 @@ L58Touch* L58Touch::instance() {
 
 bool L58Touch::begin(uint16_t width, uint16_t height) {
   ESP_LOGI(TAG, "I2C SDA:%d SCL:%d INT:%d; ", CONFIG_LV_TOUCH_I2C_SDA,
-           CONFIG_LV_TOUCH_I2C_SCL, _intPin);
+           CONFIG_LV_TOUCH_I2C_SCL, getL58TouchInt());
 
   _touch_width  = width;
   _touch_height = height;
@@ -92,7 +100,7 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
   io_conf.intr_type    = GPIO_INTR_POSEDGE;
-  io_conf.pin_bit_mask = 1ULL << CONFIG_LV_TOUCH_INT;
+  io_conf.pin_bit_mask = 1ULL << getL58TouchInt();
   io_conf.mode         = GPIO_MODE_INPUT;
   // must set enable for inited on 0 level
   io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
@@ -101,7 +109,7 @@ bool L58Touch::begin(uint16_t width, uint16_t height) {
   gpio_config(&io_conf);
 
   // INT gpio interrupt handler
-  gpio_isr_handler_add((gpio_num_t)CONFIG_LV_TOUCH_INT, gpio_isr_handler, NULL);
+  gpio_isr_handler_add((gpio_num_t)getL58TouchInt(), gpio_isr_handler, NULL);
 
   return true;
 }
