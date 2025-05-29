@@ -174,8 +174,9 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     if (_paint_type == EPDIY_REPAINT_ALL) {
       epdiy_repaint(update_area);
     } else {
-      epd_poweron();
-      epd_hl_update_area(&hl, updateMode, temperature, update_area);
+      if (epd_poweron()) {
+        epd_hl_update_area(&hl, updateMode, temperature, update_area);
+      }
       epd_poweroff();
     }
 
@@ -272,8 +273,9 @@ void paint_task_cb(void* arg) {
         if (has_paint_all) {
           epdiy_repaint(area);
         } else {
-          epd_poweron();
-          epd_hl_update_area(&hl, updateMode, temperature, area);
+          if (epd_poweron()) {
+            epd_hl_update_area(&hl, updateMode, temperature, area);
+          }
           epd_poweroff();
         }
 #if CONFIG_PM_ENABLE
