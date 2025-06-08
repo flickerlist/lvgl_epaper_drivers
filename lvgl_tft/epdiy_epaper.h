@@ -62,6 +62,14 @@ void epdiy_repaint_all();
  */
 bool epdiy_check_pause();
 
+/**
+ * @brief lock on poweron, for continue painting
+ */
+bool epdiy_auto_poweron();
+void epdiy_lock_poweron();
+void epdiy_unlock_poweron();
+bool epdiy_is_locking_poweron();
+
 /* set area to white */
 void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time);
 

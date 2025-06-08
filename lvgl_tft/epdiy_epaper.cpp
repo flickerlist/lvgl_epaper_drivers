@@ -10,6 +10,8 @@
 
 using namespace std;
 
+#define TAG "epdiy_epaper"
+
 #ifdef CONFIG_IDF_TARGET_ESP32
   #define USE_PARALLEL_PAINT 1
 #endif
@@ -61,9 +63,12 @@ void epdiy_init(void) {
 #endif
 
   //   Clear all always in init:
-  epd_poweron();
-  epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
-  epd_poweroff();
+  if (epdiy_auto_poweron()) {
+    epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
+  }
+  if (!epdiy_is_locking_poweron()) {
+    epd_poweroff();
+  }
 
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
@@ -174,10 +179,12 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     if (_paint_type == EPDIY_REPAINT_ALL) {
       epdiy_repaint(update_area);
     } else {
-      if (epd_poweron()) {
+      if (epdiy_auto_poweron()) {
         epd_hl_update_area(&hl, updateMode, temperature, update_area);
       }
-      epd_poweroff();
+      if (!epdiy_is_locking_poweron()) {
+        epd_poweroff();
+      }
     }
 
   #if CONFIG_PM_ENABLE
@@ -273,10 +280,12 @@ void paint_task_cb(void* arg) {
         if (has_paint_all) {
           epdiy_repaint(area);
         } else {
-          if (epd_poweron()) {
+          if (epdiy_auto_poweron()) {
             epd_hl_update_area(&hl, updateMode, temperature, area);
           }
-          epd_poweroff();
+          if (!epdiy_is_locking_poweron()) {
+            epd_poweroff();
+          }
         }
 #if CONFIG_PM_ENABLE
         ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
@@ -313,6 +322,36 @@ void paint_task_cb(void* arg) {
     }
   }
   vTaskDelete(_paint_task_handle);
+}
+
+/**
+ * @brief lock on poweron, for continue painting
+ */
+bool _is_locking_poweron = false;
+bool epdiy_auto_poweron() {
+  if (epdiy_is_locking_poweron()) {
+    return true;
+  }
+  return epd_poweron();
+}
+void epdiy_lock_poweron() {
+  // int64_t start = esp_timer_get_time();
+  while (!epd_poweron()) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  // ESP_LOGW(TAG, "epdiy_lock_poweron cost %lld ms",
+  //          (esp_timer_get_time() - start) / 1000);
+  _is_locking_poweron = true;
+}
+void epdiy_unlock_poweron() {
+  if (_is_locking_poweron) {
+    epd_poweroff();
+    _is_locking_poweron = false;
+    // ESP_LOGW(TAG, "epdiy_unlock_poweron");
+  }
+}
+bool epdiy_is_locking_poweron() {
+  return _is_locking_poweron;
 }
 
 /* Check if epdiy paint thread can pause */
@@ -397,11 +436,14 @@ void epdiy_repaint_full_screen() {
 
   memset(hl.back_fb, 0xFF, epd_width() / 2 * epd_height());
 
-  epd_poweron();
-  auto area = epd_full_screen();
-  epd_clear_area_cycles(area, 1, _clear_cycle_time);
-  epd_hl_update_area(&hl, updateMode, temperature, area);
-  epd_poweroff();
+  if (epdiy_auto_poweron()) {
+    auto area = epd_full_screen();
+    epd_clear_area_cycles(area, 1, _clear_cycle_time);
+    epd_hl_update_area(&hl, updateMode, temperature, area);
+  }
+  if (!epdiy_is_locking_poweron()) {
+    epd_poweroff();
+  }
 
 #else
 
@@ -412,13 +454,16 @@ void epdiy_repaint_full_screen() {
 
 /* refresh area */
 void epdiy_repaint(EpdRect area) {
-  epd_poweron();
+  if (epdiy_auto_poweron()) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
-  epdiy_clear_to_white(area, 1, _clear_cycle_time);
-  epd_hl_update_area(&hl, updateMode, temperature, area);
+    epdiy_clear_to_white(area, 1, _clear_cycle_time);
+    epd_hl_update_area(&hl, updateMode, temperature, area);
 #else
-  epd_clear_area_cycles(area, 1, _clear_cycle_time);
-  epd_hl_update_area_directly(&hl, updateMode, temperature, area);
+    epd_clear_area_cycles(area, 1, _clear_cycle_time);
+    epd_hl_update_area_directly(&hl, updateMode, temperature, area);
 #endif
-  epd_poweroff();
+  }
+  if (!epdiy_is_locking_poweron()) {
+    epd_poweroff();
+  }
 }
