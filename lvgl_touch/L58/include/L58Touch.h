@@ -47,7 +47,7 @@ class L58Touch {
 
  public:
   // TwoWire * wire will be replaced by ESP-IDF https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/i2c.html
-  L58Touch(int8_t intPin);
+  L58Touch();
   ~L58Touch();
 
   static L58Touch* instance();

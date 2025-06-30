@@ -248,9 +248,9 @@ void paint_task_cb(void* arg) {
       buf_copy_to_framebuffer(area, buf);
 
       /**
-     * This seems will destroy `color_map`, so call after used `color_map`
-     * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
-     */
+       * This seems will destroy `color_map`, so call after used `color_map`
+       * epdiy_flush will only be called after lv_disp_flush_ready, so the `paint_queue` will no larger than 1
+       */
       lv_disp_flush_ready(first->drv);
 
       // capture the upper left and lower right corners
@@ -332,13 +332,22 @@ bool epdiy_auto_poweron() {
   if (epdiy_is_locking_poweron()) {
     return true;
   }
+#ifdef CONFIG_IDF_TARGET_ESP32S3
   return epd_poweron();
+#else
+  epd_poweron();
+  return true;
+#endif
 }
 void epdiy_lock_poweron() {
   // int64_t start = esp_timer_get_time();
+#ifdef CONFIG_IDF_TARGET_ESP32S3
   while (!epd_poweron()) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
+#else
+  epd_poweron();
+#endif
   // ESP_LOGW(TAG, "epdiy_lock_poweron cost %lld ms",
   //          (esp_timer_get_time() - start) / 1000);
   _is_locking_poweron = true;
