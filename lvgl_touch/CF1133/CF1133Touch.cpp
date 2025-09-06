@@ -31,6 +31,11 @@ static void IRAM_ATTR gpio_isr_handler(void* arg) {
   xTaskResumeFromISR(_cf1133_task_handle);
 }
 
+// reset interrupt pin to avoid esp_restart failed
+static void _cf1133_before_restart() {
+  gpio_reset_pin((gpio_num_t)getCF1133TouchInt());
+}
+
 // custom interrupt pin
 static int8_t _touchPin;
 void          setCF1133TouchInt(int8_t intPin) {
@@ -97,6 +102,9 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   // pull-up mode for touch interrupt
   io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_config(&io_conf);
+
+  // reset interrupt pin to avoid esp_restart failed
+  esp_register_shutdown_handler(_cf1133_before_restart);
 
   // INT gpio interrupt handler
   gpio_isr_handler_add((gpio_num_t)getCF1133TouchInt(), gpio_isr_handler, NULL);
