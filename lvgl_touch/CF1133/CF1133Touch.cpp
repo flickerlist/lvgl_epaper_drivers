@@ -223,7 +223,8 @@ void CF1133Touch::sleep(int32_t try_count) {
 }
 
 // a new task for cf1133 interrupt
-bool _cf1133_task_inited = false;
+bool _cf1133_task_inited       = false;
+int  _cf1133_read_failed_count = 0;
 void _cf1133_task_cb(void* arg) {
   while (true) {
     if (!_cf1133_task_inited) {
@@ -237,14 +238,21 @@ void _cf1133_task_cb(void* arg) {
       ESP_LOGI(TAG, "readedPoint, err: %d, point: %d, %d, %d", err,
                _readedPoint.x, _readedPoint.y, _readedPoint.event);
       if (err == ESP_OK) {
-        cf1133_interrupt_trigger = 0;
-        _readedPoint.timestamp   = esp_timer_get_time();
+        cf1133_interrupt_trigger  = 0;
+        _cf1133_read_failed_count = 0;
+        _readedPoint.timestamp    = esp_timer_get_time();
         if (_touchInterruptHandler) {
           _touchInterruptHandler();
         }
       } else {
-        // if read error, wait 100ms and try again when next loop
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        _cf1133_read_failed_count++;
+        if (_cf1133_read_failed_count > 10) {
+          _cf1133_read_failed_count = 0;
+          cf1133_interrupt_trigger  = 0;
+        } else {
+          // if read error, wait 100ms and try again when next loop
+          vTaskDelay(100 / portTICK_PERIOD_MS);
+        }
       }
     } else {
       ESP_LOGI(TAG, "no need to readPoint");
