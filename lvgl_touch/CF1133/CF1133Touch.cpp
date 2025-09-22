@@ -68,7 +68,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
            "receive the width / height so touch cannot be rotation aware");
   }
 
-// s3 board will init by epdiy
+// s3 board will init by main project
 #ifndef CONFIG_IDF_TARGET_ESP32S3
   i2c_config_t conf;
   conf.mode             = I2C_MODE_MASTER;
