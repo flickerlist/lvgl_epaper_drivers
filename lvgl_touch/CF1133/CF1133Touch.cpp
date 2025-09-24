@@ -33,7 +33,10 @@ static void IRAM_ATTR gpio_isr_handler(void* arg) {
 
 // reset interrupt pin to avoid esp_restart failed
 static void _cf1133_before_restart() {
-  gpio_reset_pin((gpio_num_t)getCF1133TouchInt());
+  auto int_pin = (gpio_num_t)getCF1133TouchInt();
+  gpio_intr_disable(int_pin);
+  gpio_isr_handler_remove(int_pin);
+  gpio_reset_pin(int_pin);
 }
 
 // custom interrupt pin
