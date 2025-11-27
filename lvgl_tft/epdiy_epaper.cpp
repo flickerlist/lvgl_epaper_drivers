@@ -28,7 +28,7 @@ epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 TaskHandle_t          _paint_task_handle;
 void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data);
 void paint_task_cb(void* arg);
-void epdiy_repaint_full_screen();
+void epdiy_repaint_full_screen(bool need_power = true);
 
 typedef struct _paint_t {
   lvgl_epdiy_flush_type_t paint_type;
@@ -182,6 +182,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
       if (epdiy_auto_poweron()) {
         epd_hl_update_area(&hl, updateMode, temperature, update_area);
       }
+
+      if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
+        epdiy_repaint_full_screen(false);
+      }
+
       if (!epdiy_is_locking_poweron()) {
         epd_poweroff();
       }
@@ -263,7 +268,8 @@ void paint_task_cb(void* arg) {
       if (area.y + area.height > y2)
         y2 = area.y + area.height;
 
-      if (first->paint_type == EPDIY_REPAINT_ALL) {
+      auto _paint_type = first->paint_type;
+      if (_paint_type == EPDIY_REPAINT_ALL) {
         has_paint_all = true;
       }
 
@@ -283,6 +289,11 @@ void paint_task_cb(void* arg) {
           if (epdiy_auto_poweron()) {
             epd_hl_update_area(&hl, updateMode, temperature, area);
           }
+
+          if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
+            epdiy_repaint_full_screen(false);
+          }
+
           if (!epdiy_is_locking_poweron()) {
             epd_poweroff();
           }
@@ -440,17 +451,17 @@ void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
 #endif
 }
 
-void epdiy_repaint_full_screen() {
+void epdiy_repaint_full_screen(bool need_power) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 
   memset(hl.back_fb, 0xFF, epd_width() / 2 * epd_height());
 
-  if (epdiy_auto_poweron()) {
+  if (!need_power || epdiy_auto_poweron()) {
     auto area = epd_full_screen();
     epd_clear_area_cycles(area, 1, _clear_cycle_time);
     epd_hl_update_area(&hl, updateMode, temperature, area);
   }
-  if (!epdiy_is_locking_poweron()) {
+  if (need_power && !epdiy_is_locking_poweron()) {
     epd_poweroff();
   }
 

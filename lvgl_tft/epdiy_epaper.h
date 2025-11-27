@@ -47,6 +47,7 @@ typedef int lvgl_epdiy_flush_type_t;
 #define EPDIY_PARTIAL_PAINT 0
 #define EPDIY_REPAINT_ALL 1
 #define EPDIY_NO_PAINT 2
+#define EPDIY_REPAINT_ALL_AFTER 3
 typedef lvgl_epdiy_flush_type_t (*epdiy_flush_type_cb_t)(EpdRect* area,
                                                          int      flush_count);
 void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb);
