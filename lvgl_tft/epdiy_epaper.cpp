@@ -351,7 +351,7 @@ bool epdiy_auto_poweron() {
 #endif
 }
 void epdiy_lock_poweron() {
-  // int64_t start = esp_timer_get_time();
+  int64_t start = esp_timer_get_time();
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   while (!epd_poweron()) {
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -359,15 +359,15 @@ void epdiy_lock_poweron() {
 #else
   epd_poweron();
 #endif
-  // ESP_LOGW(TAG, "epdiy_lock_poweron cost %lld ms",
-  //          (esp_timer_get_time() - start) / 1000);
+  ESP_LOGW(TAG, "epdiy_lock_poweron cost %lld ms",
+           (esp_timer_get_time() - start) / 1000);
   _is_locking_poweron = true;
 }
 void epdiy_unlock_poweron() {
   if (_is_locking_poweron) {
     epd_poweroff();
     _is_locking_poweron = false;
-    // ESP_LOGW(TAG, "epdiy_unlock_poweron");
+    ESP_LOGW(TAG, "epdiy_unlock_poweron");
   }
 }
 bool epdiy_is_locking_poweron() {
