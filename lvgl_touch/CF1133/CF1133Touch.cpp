@@ -14,12 +14,18 @@ static const char* TAG                    = "CF1133Touch";
 static uint8_t                cf1133_interrupt_trigger = 0;
 static TouchInterruptHandler* _touchInterruptHandler   = nullptr;
 static CF1133TPoint           _readedPoint;
+static gpio_int_type_t        _cf1133_interrupt_type = GPIO_INTR_POSEDGE;
 
 esp_err_t scanPoint(CF1133TPoint& point);
 
 // a new task for cf1133 interrupt
 TaskHandle_t _cf1133_task_handle;
 void         _cf1133_task_cb(void* arg);
+
+// set intr type
+void setCF1133IntrType(gpio_int_type_t type) {
+  _cf1133_interrupt_type = type;
+}
 
 // touch interrupt handler
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
@@ -33,7 +39,8 @@ static void IRAM_ATTR gpio_isr_handler(void* arg) {
 
 // reset interrupt pin to avoid esp_restart failed
 static void _cf1133_before_restart() {
-  auto int_pin = (gpio_num_t)getCF1133TouchInt();
+  cf1133_interrupt_trigger = 0;
+  auto int_pin             = (gpio_num_t)getCF1133TouchInt();
   gpio_intr_disable(int_pin);
   gpio_isr_handler_remove(int_pin);
   gpio_reset_pin(int_pin);
@@ -97,13 +104,16 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
 
   // INT pin triggers the callback function on the Falling edge of the GPIO
   gpio_config_t io_conf;
-  io_conf.intr_type    = GPIO_INTR_POSEDGE;
+  io_conf.intr_type    = _cf1133_interrupt_type;
   io_conf.pin_bit_mask = 1ULL << getCF1133TouchInt();
   io_conf.mode         = GPIO_MODE_INPUT;
-  // must set enable for inited on 0 level
-  io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
-  // pull-up mode for touch interrupt
-  io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+  if (_cf1133_interrupt_type == GPIO_INTR_NEGEDGE) {
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en   = GPIO_PULLUP_ENABLE;
+  } else {
+    io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    io_conf.pull_up_en   = GPIO_PULLUP_DISABLE;
+  }
   gpio_config(&io_conf);
 
   // reset interrupt pin to avoid esp_restart failed
