@@ -1,4 +1,5 @@
 #include "CF1133Touch.h"
+#include "esp_heap_caps.h"
 #include "esp_utils.h"
 #include "lvgl.h"
 
@@ -19,8 +20,11 @@ static gpio_int_type_t        _cf1133_interrupt_type = GPIO_INTR_POSEDGE;
 esp_err_t scanPoint(CF1133TPoint& point);
 
 // a new task for cf1133 interrupt
-TaskHandle_t _cf1133_task_handle;
-void         _cf1133_task_cb(void* arg);
+TaskHandle_t          _cf1133_task_handle;
+void                  _cf1133_task_cb(void* arg);
+static StaticTask_t   _cf1133_task_tcb;
+static StackType_t*   _cf1133_task_stack       = nullptr;
+static const uint32_t _cf1133_task_stack_depth = 1024 * 4;
 
 // set intr type
 void setCF1133IntrType(gpio_int_type_t type) {
@@ -123,8 +127,24 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
   gpio_isr_handler_add((gpio_num_t)getCF1133TouchInt(), gpio_isr_handler, NULL);
 
   // a new task for cf1133 interrupt
-  xTaskCreatePinnedToCore(&_cf1133_task_cb, "cf1133_task_cb", 1024 * 4, NULL,
-                          configMAX_PRIORITIES - 1, &_cf1133_task_handle, 1);
+  if (_cf1133_task_stack == nullptr) {
+    _cf1133_task_stack = (StackType_t*)heap_caps_malloc(
+      _cf1133_task_stack_depth * sizeof(StackType_t),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+
+  if (_cf1133_task_stack == nullptr) {
+    ESP_LOGE(TAG, "failed to alloc cf1133 task stack");
+    return false;
+  }
+
+  _cf1133_task_handle = xTaskCreateStaticPinnedToCore(
+    _cf1133_task_cb, "cf1133_task_cb", _cf1133_task_stack_depth, NULL,
+    configMAX_PRIORITIES - 1, _cf1133_task_stack, &_cf1133_task_tcb, 1);
+  if (_cf1133_task_handle == NULL) {
+    ESP_LOGE(TAG, "xTaskCreateStaticPinnedToCore cf1133_task_cb failed");
+    return false;
+  }
 
   return true;
 }
