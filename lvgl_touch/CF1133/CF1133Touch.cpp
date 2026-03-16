@@ -3,6 +3,8 @@
 #include "esp_utils.h"
 #include "lvgl.h"
 
+#include "./upgrade/sitronix_ts_upgrade_fw_bin.h"
+
 CF1133Touch*       CF1133Touch::_instance = nullptr;
 static const char* TAG                    = "CF1133Touch";
 
@@ -15,7 +17,6 @@ static const char* TAG                    = "CF1133Touch";
 static uint8_t                cf1133_interrupt_trigger = 0;
 static TouchInterruptHandler* _touchInterruptHandler   = nullptr;
 static CF1133TPoint           _readedPoint;
-static gpio_int_type_t        _cf1133_interrupt_type = GPIO_INTR_POSEDGE;
 
 esp_err_t scanPoint(CF1133TPoint& point);
 
@@ -26,9 +27,10 @@ static StaticTask_t   _cf1133_task_tcb;
 static StackType_t*   _cf1133_task_stack       = nullptr;
 static const uint32_t _cf1133_task_stack_depth = 1024 * 4;
 
-// set intr type
-void setCF1133IntrType(gpio_int_type_t type) {
-  _cf1133_interrupt_type = type;
+// get intr type
+gpio_int_type_t getCF1133IntrType() {
+  // change to NEGEDGE after v7
+  return st_get_firmware_version() >= 7 ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE;
 }
 
 // touch interrupt handler
@@ -107,6 +109,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
 #endif
 
   // INT pin triggers the callback function on the Falling edge of the GPIO
+  auto          _cf1133_interrupt_type = getCF1133IntrType();
   gpio_config_t io_conf;
   io_conf.intr_type    = _cf1133_interrupt_type;
   io_conf.pin_bit_mask = 1ULL << getCF1133TouchInt();

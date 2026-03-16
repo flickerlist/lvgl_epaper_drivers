@@ -35,7 +35,7 @@ void   setCF1133TouchInt(int8_t intPin);
 int8_t getCF1133TouchInt();
 
 // set intr type
-void setCF1133IntrType(gpio_int_type_t type);
+gpio_int_type_t getCF1133IntrType();
 
 class CF1133Touch {
   typedef struct {
