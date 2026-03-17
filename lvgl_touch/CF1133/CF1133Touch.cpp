@@ -26,11 +26,16 @@ void                  _cf1133_task_cb(void* arg);
 static StaticTask_t   _cf1133_task_tcb;
 static StackType_t*   _cf1133_task_stack       = nullptr;
 static const uint32_t _cf1133_task_stack_depth = 1024 * 4;
+gpio_int_type_t       _cf1133_interrupt_type   = GPIO_INTR_POSEDGE;
+
+// set intr type
+void setCF1133IntrType(gpio_int_type_t type) {
+  _cf1133_interrupt_type = type;
+}
 
 // get intr type
 gpio_int_type_t getCF1133IntrType() {
-  // change to NEGEDGE after v7
-  return st_get_firmware_version() >= 7 ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE;
+  return _cf1133_interrupt_type;
 }
 
 // touch interrupt handler
@@ -73,8 +78,9 @@ CF1133Touch* CF1133Touch::instance() {
 }
 
 bool CF1133Touch::begin(uint16_t width, uint16_t height) {
-  ESP_LOGI(TAG, "I2C SDA:%d SCL:%d INT:%d", CONFIG_LV_TOUCH_I2C_SDA,
-           CONFIG_LV_TOUCH_I2C_SCL, getCF1133TouchInt());
+  ESP_LOGI(TAG, "I2C SDA:%d SCL:%d INT:%d, intr type: %d",
+           CONFIG_LV_TOUCH_I2C_SDA, CONFIG_LV_TOUCH_I2C_SCL,
+           getCF1133TouchInt(), _cf1133_interrupt_type);
 
   _touch_width  = width;
   _touch_height = height;
@@ -109,7 +115,6 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
 #endif
 
   // INT pin triggers the callback function on the Falling edge of the GPIO
-  auto          _cf1133_interrupt_type = getCF1133IntrType();
   gpio_config_t io_conf;
   io_conf.intr_type    = _cf1133_interrupt_type;
   io_conf.pin_bit_mask = 1ULL << getCF1133TouchInt();
