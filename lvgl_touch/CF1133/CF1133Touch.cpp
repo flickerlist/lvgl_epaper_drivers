@@ -148,7 +148,7 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
 
   _cf1133_task_handle = xTaskCreateStaticPinnedToCore(
     _cf1133_task_cb, "cf1133_task_cb", _cf1133_task_stack_depth, NULL,
-    configMAX_PRIORITIES - 1, _cf1133_task_stack, &_cf1133_task_tcb, 1);
+    configMAX_PRIORITIES - 2, _cf1133_task_stack, &_cf1133_task_tcb, 1);
   if (_cf1133_task_handle == NULL) {
     ESP_LOGE(TAG, "xTaskCreateStaticPinnedToCore cf1133_task_cb failed");
     return false;
