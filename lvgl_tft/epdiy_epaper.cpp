@@ -2,6 +2,7 @@
 #include "epd_highlevel.h"
 #include "esp_log.h"
 #include "esp_pm.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -38,9 +39,9 @@ typedef struct _paint_t {
   bool                    is_last;
 } paint_t;
 
-vector<paint_t>  paint_queue;
-xSemaphoreHandle paint_queue_xMutex;  // lock for paint_queue
-bool             whole_repainting = false;  // Whole repaint task
+vector<paint_t>          paint_queue;
+static SemaphoreHandle_t paint_queue_xMutex = NULL;  // lock for paint_queue
+bool                     whole_repainting   = false;  // Whole repaint task
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;

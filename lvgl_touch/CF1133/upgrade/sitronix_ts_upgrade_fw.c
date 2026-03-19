@@ -1,5 +1,6 @@
 #include "driver/i2c.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -67,7 +68,7 @@ int st_i2c_upg_read_bytes(unsigned char addr, unsigned char* rxbuf, int len) {
   }
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (ST_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
-  ets_delay_us(150);
+  esp_rom_delay_us(150);
   i2c_master_write_byte(cmd, addr, true);
   i2c_master_stop(cmd);
 
@@ -87,7 +88,7 @@ int st_i2c_upg_read_bytes(unsigned char addr, unsigned char* rxbuf, int len) {
   }
   i2c_master_start(cmd);
   i2c_master_write_byte(cmd, (ST_I2C_ADDR << 1) | I2C_MASTER_READ, true);
-  ets_delay_us(150);
+  esp_rom_delay_us(150);
   if (len > 1) {
     i2c_master_read(cmd, rxbuf, len - 1, I2C_MASTER_ACK);
   }
