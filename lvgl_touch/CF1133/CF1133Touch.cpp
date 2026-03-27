@@ -34,6 +34,10 @@ void setCF1133IntrType(gpio_int_type_t type) {
   _cf1133_interrupt_type = type;
 }
 
+gpio_int_type_t getCF1133IntrType() {
+  return _cf1133_interrupt_type;
+}
+
 // touch interrupt handler
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
   // ets_printf("touch interrupt level: %d\n",
