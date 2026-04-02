@@ -40,7 +40,7 @@
 
 // read SITRONIX_DUMP from header file
 // #include "./dump_20240823_v05.h"
-#include "./dump_20250915_v06.h"
+// #include "./dump_20250915_v06.h"
 #include "./dump_20251208_v07_negedge.h"
 
 #ifdef ST_UPGRADE_BY_ISPID
