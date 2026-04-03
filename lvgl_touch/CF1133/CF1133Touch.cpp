@@ -1,5 +1,7 @@
 #include "CF1133Touch.h"
 #include "esp_heap_caps.h"
+#include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "esp_utils.h"
 #include "lvgl.h"
 
@@ -25,10 +27,15 @@ void                  _cf1133_task_cb(void* arg);
 static StaticTask_t   _cf1133_task_tcb;
 static StackType_t*   _cf1133_task_stack       = nullptr;
 static const uint32_t _cf1133_task_stack_depth = 1024 * 4;
+static const UBaseType_t _cf1133_task_priority = configMAX_PRIORITIES - 2;
 
 // set intr type
 void setCF1133IntrType(gpio_int_type_t type) {
   _cf1133_interrupt_type = type;
+}
+
+gpio_int_type_t getCF1133IntrType() {
+  return _cf1133_interrupt_type;
 }
 
 // touch interrupt handler
@@ -138,9 +145,13 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
     return false;
   }
 
+  ESP_LOGI(TAG, "cf1133 task stack in %s",
+           esp_ptr_external_ram(_cf1133_task_stack) ? "PSRAM" :
+                                                       "internal RAM");
+
   _cf1133_task_handle = xTaskCreateStaticPinnedToCore(
     _cf1133_task_cb, "cf1133_task_cb", _cf1133_task_stack_depth, NULL,
-    configMAX_PRIORITIES - 1, _cf1133_task_stack, &_cf1133_task_tcb, 1);
+    _cf1133_task_priority, _cf1133_task_stack, &_cf1133_task_tcb, 1);
   if (_cf1133_task_handle == NULL) {
     ESP_LOGE(TAG, "xTaskCreateStaticPinnedToCore cf1133_task_cb failed");
     return false;
@@ -252,7 +263,7 @@ void CF1133Touch::sleep(int32_t try_count) {
     }
     vTaskDelay(pdMS_TO_TICKS(300));
   }
-  ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
+  ESP_LOGW(TAG, "sleep result: %d; try count: %ld", res, (long)try_count);
 }
 
 // a new task for cf1133 interrupt
@@ -264,7 +275,7 @@ void _cf1133_task_cb(void* arg) {
       _cf1133_task_inited = true;
       vTaskSuspend(_cf1133_task_handle);
     }
-    ets_delay_us(100);
+    esp_rom_delay_us(100);
 
     if (cf1133_interrupt_trigger) {
       auto err = scanPoint(_readedPoint);
@@ -291,7 +302,7 @@ void _cf1133_task_cb(void* arg) {
       ESP_LOGI(TAG, "no need to readPoint");
     }
 
-    ets_delay_us(100);
+    esp_rom_delay_us(100);
 
     if (!cf1133_interrupt_trigger) {
       ESP_LOGI(TAG, "vTaskSuspend Touch task");
@@ -316,7 +327,7 @@ void CF1133Touch::wakeup(int32_t try_count) {
     }
     vTaskDelay(pdMS_TO_TICKS(300));
   }
-  ESP_LOGW(TAG, "wakeup: %d; try count: %d", res, try_count);
+  ESP_LOGW(TAG, "wakeup: %d; try count: %ld", res, (long)try_count);
 }
 
 uint8_t CF1133Touch::readStatus() {

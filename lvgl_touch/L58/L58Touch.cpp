@@ -21,7 +21,7 @@ esp_err_t _l58_i2c_write_and_read(uint8_t    addr,
                                   int        write_len,
                                   uint8_t*   read_data,
                                   int        read_len,
-                                  uint       wait_ms,
+                                  uint32_t   wait_ms,
                                   i2c_port_t port = I2C_NUM_0);
 
 /**
@@ -229,7 +229,7 @@ void L58Touch::sleep(int32_t try_count) {
     }
     vTaskDelay(pdMS_TO_TICKS(300));
   }
-  ESP_LOGW(TAG, "sleep result: %d; try count: %d", res, try_count);
+  ESP_LOGW(TAG, "sleep result: %d; try count: %ld", res, (long)try_count);
 }
 
 esp_err_t _l58_i2c_write_and_read(uint8_t    addr,
@@ -238,7 +238,7 @@ esp_err_t _l58_i2c_write_and_read(uint8_t    addr,
                                   int        write_len,
                                   uint8_t*   read_data,
                                   int        read_len,
-                                  uint       wait_ms,
+                                  uint32_t   wait_ms,
                                   i2c_port_t port) {
   i2c_cmd_handle_t cmd = i2c_cmd_link_create();
   if (cmd == NULL) {
