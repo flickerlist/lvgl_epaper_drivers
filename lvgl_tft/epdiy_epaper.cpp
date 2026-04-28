@@ -429,17 +429,21 @@ void epdiy_set_white(EpdRect area) {
   int width = epd_rotated_display_width();
 #endif
 
-  auto x1      = area.x;
-  auto x2      = area.x + area.width;
-  auto int8_x1 = x1 % 2 == 1 ? x1 / 2 + 1 : x1 / 2;  // 5 -> 3
-  auto int8_x2 = x2 / 2;  // 9 -> 4
+  auto x1         = area.x;
+  auto x2         = area.x + area.width;
+  auto first_byte = x1 % 2 == 1 ? x1 / 2 + 1 : x1 / 2;  // 5 -> 3
+  auto last_byte  = x2 / 2;  // 9 -> 4
   for (int y = area.y; y < area.y + area.height; y++) {
-    memset(hl.back_fb + width / 2 * y + int8_x1, 0xFF, int8_x2 - int8_x1);
+    uint8_t* line = hl.back_fb + width / 2 * y;
+
+    memset(line + first_byte, 0xFF, last_byte - first_byte);
     if (x1 % 2 == 1) {
-      *(hl.back_fb + width / 2 * y + x1) |= 0x0F;
+      // Odd x is stored in the high nibble of byte x / 2.
+      *(line + x1 / 2) |= 0xF0;
     }
     if (x2 % 2 == 1) {
-      *(hl.back_fb + width / 2 * y + x2 / 2) |= 0xF0;
+      // x2 is exclusive, so the last pixel in-range is the low nibble.
+      *(line + x2 / 2) |= 0x0F;
     }
   }
 }
