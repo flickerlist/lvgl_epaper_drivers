@@ -27,7 +27,6 @@ void                  _cf1133_task_cb(void* arg);
 static StaticTask_t   _cf1133_task_tcb;
 static StackType_t*   _cf1133_task_stack       = nullptr;
 static const uint32_t _cf1133_task_stack_depth = 1024 * 4;
-static const UBaseType_t _cf1133_task_priority = configMAX_PRIORITIES - 2;
 
 // set intr type
 void setCF1133IntrType(gpio_int_type_t type) {
@@ -145,13 +144,9 @@ bool CF1133Touch::begin(uint16_t width, uint16_t height) {
     return false;
   }
 
-  ESP_LOGI(TAG, "cf1133 task stack in %s",
-           esp_ptr_external_ram(_cf1133_task_stack) ? "PSRAM" :
-                                                       "internal RAM");
-
   _cf1133_task_handle = xTaskCreateStaticPinnedToCore(
     _cf1133_task_cb, "cf1133_task_cb", _cf1133_task_stack_depth, NULL,
-    _cf1133_task_priority, _cf1133_task_stack, &_cf1133_task_tcb, 1);
+    configMAX_PRIORITIES - 2, _cf1133_task_stack, &_cf1133_task_tcb, 1);
   if (_cf1133_task_handle == NULL) {
     ESP_LOGE(TAG, "xTaskCreateStaticPinnedToCore cf1133_task_cb failed");
     return false;

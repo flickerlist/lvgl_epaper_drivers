@@ -22,6 +22,7 @@ uint16_t            flushcalls = 0;
 uint8_t*            framebuffer;
 uint8_t             temperature       = 25;
 const int           _clear_cycle_time = 12;
+static int          s_lcd_pclk_mhz    = 20;
 // MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
 enum EpdDrawMode updateMode = MODE_DU;
 
@@ -30,6 +31,7 @@ TaskHandle_t          _paint_task_handle;
 void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data);
 void paint_task_cb(void* arg);
 void epdiy_repaint_full_screen(bool need_power = true);
+static void epdiy_handle_draw_error(enum EpdDrawError err);
 
 typedef struct _paint_t {
   lvgl_epdiy_flush_type_t paint_type;
@@ -39,9 +41,9 @@ typedef struct _paint_t {
   bool                    is_last;
 } paint_t;
 
-vector<paint_t>  paint_queue;
-static SemaphoreHandle_t paint_queue_xMutex;  // lock for paint_queue
-bool             whole_repainting = false;  // Whole repaint task
+vector<paint_t>          paint_queue;
+static SemaphoreHandle_t paint_queue_xMutex = NULL;  // lock for paint_queue
+bool                     whole_repainting   = false;  // Whole repaint task
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;
@@ -56,6 +58,7 @@ void epdiy_init(void) {
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   framebuffer = epd_hl_get_framebuffer(&hl);
+  s_lcd_pclk_mhz = epd_get_display()->bus_speed;
 
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "epdiy_pm_lock",
@@ -78,6 +81,23 @@ void epdiy_init(void) {
 #ifdef USE_PARALLEL_PAINT
   xTaskCreatePinnedToCore(&paint_task_cb, "paint_cb", 1024 * 4, NULL, 5,
                           &_paint_task_handle, 1);
+#endif
+}
+
+static void epdiy_handle_draw_error(enum EpdDrawError err) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (err & EPD_DRAW_EMPTY_LINE_QUEUE) {
+    int next_pclk = s_lcd_pclk_mhz > 10 ? s_lcd_pclk_mhz - 2 : 10;
+    if (next_pclk != s_lcd_pclk_mhz) {
+      s_lcd_pclk_mhz = next_pclk;
+      ESP_LOGW(TAG, "draw underrun, reduce lcd pixel clock to %d MHz",
+               s_lcd_pclk_mhz);
+      epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
+    } else {
+      ESP_LOGW(TAG, "draw underrun, lcd pixel clock already at minimum %d MHz",
+               s_lcd_pclk_mhz);
+    }
+  }
 #endif
 }
 
@@ -181,7 +201,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
       epdiy_repaint(update_area);
     } else {
       if (epdiy_auto_poweron()) {
-        epd_hl_update_area(&hl, updateMode, temperature, update_area);
+        auto err = epd_hl_update_area(&hl, updateMode, temperature, update_area);
+        if (err != EPD_DRAW_SUCCESS) {
+          epdiy_handle_draw_error(err);
+          epdiy_repaint_full_screen(false);
+        }
       }
 
       if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
@@ -288,7 +312,11 @@ void paint_task_cb(void* arg) {
           epdiy_repaint(area);
         } else {
           if (epdiy_auto_poweron()) {
-            epd_hl_update_area(&hl, updateMode, temperature, area);
+            auto err = epd_hl_update_area(&hl, updateMode, temperature, area);
+            if (err != EPD_DRAW_SUCCESS) {
+              epdiy_handle_draw_error(err);
+              epdiy_repaint_full_screen(false);
+            }
           }
 
           if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
@@ -429,17 +457,21 @@ void epdiy_set_white(EpdRect area) {
   int width = epd_rotated_display_width();
 #endif
 
-  auto x1      = area.x;
-  auto x2      = area.x + area.width;
-  auto int8_x1 = x1 % 2 == 1 ? x1 / 2 + 1 : x1 / 2;  // 5 -> 3
-  auto int8_x2 = x2 / 2;  // 9 -> 4
+  auto x1         = area.x;
+  auto x2         = area.x + area.width;
+  auto first_byte = x1 % 2 == 1 ? x1 / 2 + 1 : x1 / 2;  // 5 -> 3
+  auto last_byte  = x2 / 2;  // 9 -> 4
   for (int y = area.y; y < area.y + area.height; y++) {
-    memset(hl.back_fb + width / 2 * y + int8_x1, 0xFF, int8_x2 - int8_x1);
+    uint8_t* line = hl.back_fb + width / 2 * y;
+
+    memset(line + first_byte, 0xFF, last_byte - first_byte);
     if (x1 % 2 == 1) {
-      *(hl.back_fb + width / 2 * y + x1) |= 0x0F;
+      // Odd x is stored in the high nibble of byte x / 2.
+      *(line + x1 / 2) |= 0xF0;
     }
     if (x2 % 2 == 1) {
-      *(hl.back_fb + width / 2 * y + x2 / 2) |= 0xF0;
+      // x2 is exclusive, so the last pixel in-range is the low nibble.
+      *(line + x2 / 2) |= 0x0F;
     }
   }
 }
