@@ -23,15 +23,16 @@ uint8_t*            framebuffer;
 uint8_t             temperature       = 25;
 const int           _clear_cycle_time = 12;
 static int          s_lcd_pclk_mhz    = 20;
-// MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
-enum EpdDrawMode updateMode = MODE_DU;
+static bool         s_16_grayscale_enabled = EPDIY_ENABLE_16_GRAYSCALE;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 TaskHandle_t          _paint_task_handle;
-void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data);
+void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data);
 void paint_task_cb(void* arg);
 void epdiy_repaint_full_screen(bool need_power = true);
 static void epdiy_handle_draw_error(enum EpdDrawError err);
+static enum EpdDrawMode epdiy_current_update_mode();
+static uint8_t epdiy_color_to_gray4(lv_color_t color);
 
 typedef struct _paint_t {
   lvgl_epdiy_flush_type_t paint_type;
@@ -101,14 +102,28 @@ static void epdiy_handle_draw_error(enum EpdDrawError err) {
 #endif
 }
 
+static enum EpdDrawMode epdiy_current_update_mode() {
+  // MODE_DU: fast monochrome; MODE_GC16: slower 16 grayscale.
+  return epdiy_is_16_grayscale_enabled() ? MODE_GC16 : MODE_DU;
+}
+
+static uint8_t epdiy_color_to_gray4(lv_color_t color) {
+  if (!epdiy_is_16_grayscale_enabled()) {
+    return lv_color_to1(color) ? 0x0F : 0x00;
+  }
+
+  uint8_t brightness = lv_color_brightness(color);
+  return (brightness + 8) / 17;
+}
+
 /* A copy from epd_copy_to_framebuffer with temporary lenght prediction */
-void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
+void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data) {
   assert(framebuffer != NULL);
 
   auto display_width  = epd_rotated_display_width();
   auto display_height = epd_rotated_display_height();
   for (uint32_t i = 0; i < image_area.width * image_area.height; i++) {
-    uint8_t val = image_data[i] ? 0xff : 0x00;
+    uint8_t val = epdiy_color_to_gray4(image_data[i]);
 
     int xx = image_area.x + i % image_area.width;
     if (xx < 0 || xx >= display_width) {
@@ -122,7 +137,7 @@ void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
     if (xx % 2) {
       *buf_ptr = (*buf_ptr & 0x0F) | (val << 4);
     } else {
-      *buf_ptr = (*buf_ptr & 0xF0) | (val >> 4);
+      *buf_ptr = (*buf_ptr & 0xF0) | val;
     }
   }
 }
@@ -170,8 +185,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
 #else
 
-  uint8_t* buf = (uint8_t*)color_map;
-  buf_copy_to_framebuffer(update_area, buf);
+  buf_copy_to_framebuffer(update_area, color_map);
 
   static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
   // capture the upper left and lower right corners
@@ -201,7 +215,8 @@ void epdiy_flush(lv_disp_drv_t*   drv,
       epdiy_repaint(update_area);
     } else {
       if (epdiy_auto_poweron()) {
-        auto err = epd_hl_update_area(&hl, updateMode, temperature, update_area);
+        auto err = epd_hl_update_area(
+          &hl, epdiy_current_update_mode(), temperature, update_area);
         if (err != EPD_DRAW_SUCCESS) {
           epdiy_handle_draw_error(err);
           epdiy_repaint_full_screen(false);
@@ -241,21 +256,27 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_coord_t     y,
                      lv_color_t     color,
                      lv_opa_t       opa) {
-  uint8_t epd_color = color.full;
-  if (epd_color < 250 && updateMode == MODE_DU) {
-    epd_color = 0;
-  }
+  uint8_t epd_color = epdiy_color_to_gray4(color);
   //Instead of using epd_draw_pixel: Set pixel directly in *buf that comes afterwards in flush as *color_map
   uint32_t idx = y * buf_w / 2 + x / 2;
   if (x % 2) {
-    buf[idx] = (buf[idx] & 0x0F) | (epd_color & 0xF0);
+    buf[idx] = (buf[idx] & 0x0F) | (epd_color << 4);
   } else {
-    buf[idx] = (buf[idx] & 0xF0) | (epd_color >> 4);
+    buf[idx] = (buf[idx] & 0xF0) | epd_color;
   }
 }
 
 void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
   _epdiy_flush_type_cb = cb;
+}
+
+void epdiy_set_16_grayscale_enabled(bool enabled) {
+  s_16_grayscale_enabled = enabled;
+  ESP_LOGW(TAG, "16 grayscale %s", enabled ? "enabled" : "disabled");
+}
+
+bool epdiy_is_16_grayscale_enabled() {
+  return s_16_grayscale_enabled;
 }
 
 // -1 means is suspending, 0 means has task running
@@ -274,8 +295,7 @@ void paint_task_cb(void* arg) {
       static bool has_paint_all = false;
       auto        area          = first->area;
 
-      uint8_t* buf = (uint8_t*)first->color_map;
-      buf_copy_to_framebuffer(area, buf);
+      buf_copy_to_framebuffer(area, first->color_map);
 
       /**
        * This seems will destroy `color_map`, so call after used `color_map`
@@ -312,7 +332,8 @@ void paint_task_cb(void* arg) {
           epdiy_repaint(area);
         } else {
           if (epdiy_auto_poweron()) {
-            auto err = epd_hl_update_area(&hl, updateMode, temperature, area);
+            auto err = epd_hl_update_area(
+              &hl, epdiy_current_update_mode(), temperature, area);
             if (err != EPD_DRAW_SUCCESS) {
               epdiy_handle_draw_error(err);
               epdiy_repaint_full_screen(false);
@@ -492,7 +513,7 @@ void epdiy_repaint_full_screen(bool need_power) {
   if (!need_power || epdiy_auto_poweron()) {
     auto area = epd_full_screen();
     epd_clear_area_cycles(area, 1, _clear_cycle_time);
-    epd_hl_update_area(&hl, updateMode, temperature, area);
+    epd_hl_update_area(&hl, epdiy_current_update_mode(), temperature, area);
   }
   if (need_power && !epdiy_is_locking_poweron()) {
     epd_poweroff();
@@ -510,10 +531,11 @@ void epdiy_repaint(EpdRect area) {
   if (epdiy_auto_poweron()) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
     epdiy_clear_to_white(area, 1, _clear_cycle_time);
-    epd_hl_update_area(&hl, updateMode, temperature, area);
+    epd_hl_update_area(&hl, epdiy_current_update_mode(), temperature, area);
 #else
     epd_clear_area_cycles(area, 1, _clear_cycle_time);
-    epd_hl_update_area_directly(&hl, updateMode, temperature, area);
+    epd_hl_update_area_directly(
+      &hl, epdiy_current_update_mode(), temperature, area);
 #endif
   }
   if (!epdiy_is_locking_poweron()) {

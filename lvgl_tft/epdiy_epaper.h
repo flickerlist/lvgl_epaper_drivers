@@ -17,6 +17,14 @@ extern "C" {
 #endif
 #include "sdkconfig.h"
 
+#ifndef EPDIY_ENABLE_16_GRAYSCALE
+  #ifdef CONFIG_LV_EPAPER_EPDIY_16_GRAYSCALE
+    #define EPDIY_ENABLE_16_GRAYSCALE CONFIG_LV_EPAPER_EPDIY_16_GRAYSCALE
+  #else
+    #define EPDIY_ENABLE_16_GRAYSCALE 0
+  #endif
+#endif
+
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   #include <epdiy.h>
 #else
@@ -51,6 +59,10 @@ typedef int lvgl_epdiy_flush_type_t;
 typedef lvgl_epdiy_flush_type_t (*epdiy_flush_type_cb_t)(EpdRect* area,
                                                          int      flush_count);
 void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb);
+
+/* Global grayscale switch. Disabled keeps the fast monochrome path. */
+void epdiy_set_16_grayscale_enabled(bool enabled);
+bool epdiy_is_16_grayscale_enabled();
 
 /* refresh all screen */
 void epdiy_repaint_all();
