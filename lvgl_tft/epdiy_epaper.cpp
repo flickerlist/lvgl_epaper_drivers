@@ -23,14 +23,18 @@ uint8_t*            framebuffer;
 uint8_t             temperature       = 25;
 const int           _clear_cycle_time = 12;
 static int          s_lcd_pclk_mhz    = 20;
+static const int    EPDIY_LCD_PCLK_MIN_MHZ = 10;
+static const int    EPDIY_LCD_PCLK_STEP_MHZ = 2;
 static bool         s_16_grayscale_enabled = EPDIY_ENABLE_16_GRAYSCALE;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 TaskHandle_t          _paint_task_handle;
 void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data);
 void paint_task_cb(void* arg);
-void epdiy_repaint_full_screen(bool need_power = true);
-static void epdiy_handle_draw_error(enum EpdDrawError err);
+enum EpdDrawError epdiy_repaint_full_screen(bool need_power = true);
+static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage);
+static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
+                                                      const char* stage);
 static enum EpdDrawMode epdiy_current_update_mode();
 static uint8_t epdiy_color_to_gray4(lv_color_t color);
 
@@ -85,21 +89,46 @@ void epdiy_init(void) {
 #endif
 }
 
-static void epdiy_handle_draw_error(enum EpdDrawError err) {
+static bool epdiy_reduce_lcd_pclk_after_underrun(const char* stage) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
-  if (err & EPD_DRAW_EMPTY_LINE_QUEUE) {
-    int next_pclk = s_lcd_pclk_mhz > 10 ? s_lcd_pclk_mhz - 2 : 10;
-    if (next_pclk != s_lcd_pclk_mhz) {
-      s_lcd_pclk_mhz = next_pclk;
-      ESP_LOGW(TAG, "draw underrun, reduce lcd pixel clock to %d MHz",
-               s_lcd_pclk_mhz);
-      epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
-    } else {
-      ESP_LOGW(TAG, "draw underrun, lcd pixel clock already at minimum %d MHz",
-               s_lcd_pclk_mhz);
-    }
+  int next_pclk = s_lcd_pclk_mhz > EPDIY_LCD_PCLK_MIN_MHZ ?
+                    s_lcd_pclk_mhz - EPDIY_LCD_PCLK_STEP_MHZ :
+                    EPDIY_LCD_PCLK_MIN_MHZ;
+  if (next_pclk != s_lcd_pclk_mhz) {
+    s_lcd_pclk_mhz = next_pclk;
+    ESP_LOGW(TAG, "%s underrun, reduce lcd pixel clock to %d MHz",
+             stage ? stage : "draw", s_lcd_pclk_mhz);
+    epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
+    return true;
   }
+  ESP_LOGW(TAG, "%s underrun, lcd pixel clock already at minimum %d MHz",
+           stage ? stage : "draw", s_lcd_pclk_mhz);
 #endif
+  return false;
+}
+
+static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage) {
+  if (err == EPD_DRAW_SUCCESS) {
+    return false;
+  }
+  ESP_LOGW(TAG, "%s failed, draw error=0x%x", stage ? stage : "draw",
+           (unsigned)err);
+  if (err & EPD_DRAW_EMPTY_LINE_QUEUE) {
+    epdiy_reduce_lcd_pclk_after_underrun(stage);
+    return true;
+  }
+  return false;
+}
+
+static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
+                                                      const char* stage) {
+  if (!epdiy_handle_draw_error(err, stage)) {
+    return;
+  }
+
+  ESP_LOGW(TAG, "%s underrun, force full screen repaint",
+           stage ? stage : "draw");
+  epdiy_repaint_full_screen(false);
 }
 
 static enum EpdDrawMode epdiy_current_update_mode() {
@@ -218,8 +247,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
         auto err = epd_hl_update_area(
           &hl, epdiy_current_update_mode(), temperature, update_area);
         if (err != EPD_DRAW_SUCCESS) {
-          epdiy_handle_draw_error(err);
-          epdiy_repaint_full_screen(false);
+          epdiy_force_full_repaint_after_draw_error(err, "partial update");
         }
       }
 
@@ -335,8 +363,7 @@ void paint_task_cb(void* arg) {
             auto err = epd_hl_update_area(
               &hl, epdiy_current_update_mode(), temperature, area);
             if (err != EPD_DRAW_SUCCESS) {
-              epdiy_handle_draw_error(err);
-              epdiy_repaint_full_screen(false);
+              epdiy_force_full_repaint_after_draw_error(err, "partial update");
             }
           }
 
@@ -505,23 +532,88 @@ void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
 #endif
 }
 
-void epdiy_repaint_full_screen(bool need_power) {
+void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!framebuffer) {
+    return;
+  }
+  int display_width  = epd_rotated_display_width();
+  int display_height = epd_rotated_display_height();
+  if (x < 0 || y < 0 || x >= display_width || y >= display_height) {
+    return;
+  }
+
+  gray &= 0x0F;
+  uint8_t* buf_ptr = &framebuffer[y * display_width / 2 + x / 2];
+  if (x % 2) {
+    *buf_ptr = (*buf_ptr & 0x0F) | (gray << 4);
+  } else {
+    *buf_ptr = (*buf_ptr & 0xF0) | gray;
+  }
+#endif
+}
+
+int epdiy_update_framebuffer_area(EpdRect area) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  enum EpdDrawError err = EPD_DRAW_SUCCESS;
+
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+  #endif
+
+  if (epdiy_auto_poweron()) {
+    err = epd_hl_update_area(&hl, epdiy_current_update_mode(), temperature,
+                             area);
+    if (err != EPD_DRAW_SUCCESS) {
+      epdiy_force_full_repaint_after_draw_error(err, "framebuffer update");
+    }
+  }
+  if (!epdiy_is_locking_poweron()) {
+    epd_poweroff();
+  }
+
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+  #endif
+
+  return (int)err;
+#else
+  epdiy_repaint(area);
+  return 0;
+#endif
+}
+
+enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 
   memset(hl.back_fb, 0xFF, epd_width() / 2 * epd_height());
 
+  enum EpdDrawError err = EPD_DRAW_SUCCESS;
   if (!need_power || epdiy_auto_poweron()) {
     auto area = epd_full_screen();
-    epd_clear_area_cycles(area, 1, _clear_cycle_time);
-    epd_hl_update_area(&hl, epdiy_current_update_mode(), temperature, area);
+    for (int attempt = 0; attempt < 4; attempt++) {
+      epd_clear_area_cycles(area, 1, _clear_cycle_time);
+      err = epd_hl_update_area(&hl, epdiy_current_update_mode(), temperature,
+                               area);
+      if (err == EPD_DRAW_SUCCESS) {
+        break;
+      }
+      bool can_retry = epdiy_handle_draw_error(err, "full repaint");
+      if (!can_retry || s_lcd_pclk_mhz <= EPDIY_LCD_PCLK_MIN_MHZ) {
+        break;
+      }
+      ESP_LOGW(TAG, "retry full repaint after reducing lcd pixel clock");
+    }
   }
   if (need_power && !epdiy_is_locking_poweron()) {
     epd_poweroff();
   }
+  return err;
 
 #else
 
   epdiy_repaint(epd_full_screen());
+  return EPD_DRAW_SUCCESS;
 
 #endif
 }
@@ -531,11 +623,15 @@ void epdiy_repaint(EpdRect area) {
   if (epdiy_auto_poweron()) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
     epdiy_clear_to_white(area, 1, _clear_cycle_time);
-    epd_hl_update_area(&hl, epdiy_current_update_mode(), temperature, area);
+    auto err =
+      epd_hl_update_area(&hl, epdiy_current_update_mode(), temperature, area);
+    if (err != EPD_DRAW_SUCCESS) {
+      epdiy_force_full_repaint_after_draw_error(err, "repaint area");
+    }
 #else
     epd_clear_area_cycles(area, 1, _clear_cycle_time);
-    epd_hl_update_area_directly(
-      &hl, epdiy_current_update_mode(), temperature, area);
+    epd_hl_update_area_directly(&hl, epdiy_current_update_mode(), temperature,
+                                area);
 #endif
   }
   if (!epdiy_is_locking_poweron()) {

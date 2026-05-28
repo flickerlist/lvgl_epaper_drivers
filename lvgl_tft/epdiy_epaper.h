@@ -86,6 +86,12 @@ bool epdiy_is_locking_poweron();
 /* set area to white */
 void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time);
 
+/* write a 4-bit grayscale pixel into the epdiy framebuffer */
+void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray);
+
+/* update an area already written into the epdiy framebuffer */
+int epdiy_update_framebuffer_area(EpdRect area);
+
 /* refresh area */
 void epdiy_repaint(EpdRect area);
 
