@@ -173,7 +173,9 @@ void epdiy_flush(lv_disp_drv_t*   drv,
   uint8_t* buf = (uint8_t*)color_map;
   buf_copy_to_framebuffer(update_area, buf);
 
-  static int x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
+  static int  x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
+  static bool has_paint_all = false;
+  static bool has_paint_all_after = false;
   // capture the upper left and lower right corners
   if (area->x1 < x1)
     x1 = area->x1;
@@ -183,6 +185,12 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     x2 = area->x2;
   if (area->y2 > y2)
     y2 = area->y2;
+
+  if (_paint_type == EPDIY_REPAINT_ALL) {
+    has_paint_all = true;
+  } else if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
+    has_paint_all_after = true;
+  }
 
   if (lv_disp_flush_is_last(drv)) {
     lv_disp_flush_ready(drv);
@@ -197,7 +205,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
   #endif
 
-    if (_paint_type == EPDIY_REPAINT_ALL) {
+    if (has_paint_all) {
       epdiy_repaint(update_area);
     } else {
       if (epdiy_auto_poweron()) {
@@ -208,7 +216,7 @@ void epdiy_flush(lv_disp_drv_t*   drv,
         }
       }
 
-      if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
+      if (has_paint_all_after) {
         epdiy_repaint_full_screen(false);
       }
 
@@ -223,6 +231,8 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     // reset update boundary
     x1 = y1 = 65535;
     x2 = y2 = -1;
+    has_paint_all = false;
+    has_paint_all_after = false;
   } else {
     lv_disp_flush_ready(drv);
   }
@@ -272,6 +282,7 @@ void paint_task_cb(void* arg) {
 
       static int  x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
       static bool has_paint_all = false;
+      static bool has_paint_all_after = false;
       auto        area          = first->area;
 
       uint8_t* buf = (uint8_t*)first->color_map;
@@ -296,6 +307,8 @@ void paint_task_cb(void* arg) {
       auto _paint_type = first->paint_type;
       if (_paint_type == EPDIY_REPAINT_ALL) {
         has_paint_all = true;
+      } else if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
+        has_paint_all_after = true;
       }
 
       if (first->is_last) {
@@ -319,7 +332,7 @@ void paint_task_cb(void* arg) {
             }
           }
 
-          if (_paint_type == EPDIY_REPAINT_ALL_AFTER) {
+          if (has_paint_all_after) {
             epdiy_repaint_full_screen(false);
           }
 
@@ -335,6 +348,7 @@ void paint_task_cb(void* arg) {
         x1 = y1 = 65535;
         x2 = y2       = -1;
         has_paint_all = false;
+        has_paint_all_after = false;
       }
 
       // Must after used, or will change `first` to the second item
