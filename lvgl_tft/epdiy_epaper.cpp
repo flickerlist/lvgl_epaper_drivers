@@ -152,8 +152,8 @@ static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
 }
 
 static enum EpdDrawMode epdiy_current_update_mode() {
-  // MODE_DU: fast monochrome; MODE_GC16: slower 16 grayscale.
-  return epdiy_is_16_grayscale_enabled() ? MODE_GC16 : MODE_DU;
+  // MODE_DU: fast monochrome; MODE_GL16: slower non-flashing 16 grayscale.
+  return epdiy_is_16_grayscale_enabled() ? MODE_GL16 : MODE_DU;
 }
 
 static uint8_t epdiy_color_to_gray4(lv_color_t color) {
@@ -293,7 +293,7 @@ static enum EpdDrawError epdiy_update_prepared_area(EpdRect area,
                                                     int clear_count) {
   enum EpdDrawMode mode =
     (s_pending_update_valid && s_pending_update_use_gc16) ?
-      MODE_GC16 :
+      MODE_GL16 :
       epdiy_current_update_mode();
   if (clear_count > 0) {
     epdiy_log_area("clear before update", stage, area);
