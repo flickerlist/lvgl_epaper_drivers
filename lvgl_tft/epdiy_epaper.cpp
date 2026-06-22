@@ -62,6 +62,9 @@ static EpdRect   s_pending_update_area         = {0, 0, 0, 0};
 static bool      s_pending_update_use_gc16     = false;
 static int       s_pending_update_clear_count  = 0;
 static bool      s_pending_retry_task_running  = false;
+static bool      s_next_update_clear_valid     = false;
+static EpdRect   s_next_update_clear_area      = {0, 0, 0, 0};
+static int       s_next_update_clear_count     = 0;
 static const enum EpdDrawError EPDIY_DRAW_POWER_VERIFY_FAILED =
   (enum EpdDrawError)0x800;
 
@@ -81,13 +84,6 @@ void epdiy_init(void) {
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   framebuffer = epd_hl_get_framebuffer(&hl);
   s_lcd_pclk_mhz = epd_get_display()->bus_speed;
-#ifdef CONFIG_IDF_TARGET_ESP32S3
-  if (s_lcd_pclk_mhz > 18) {
-    s_lcd_pclk_mhz = 18;
-    ESP_LOGI(TAG, "init lcd pixel clock capped to %d MHz", s_lcd_pclk_mhz);
-    epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
-  }
-#endif
   epdiy_set_16_grayscale_enabled(false);
 
 #if CONFIG_PM_ENABLE
@@ -250,6 +246,10 @@ static int epdiy_pending_clear_count_with(int requested_clear_count) {
            s_pending_update_clear_count;
 }
 
+static int epdiy_max_clear_count(int first, int second) {
+  return first > second ? first : second;
+}
+
 static void epdiy_mark_pending_update(EpdRect area,
                                       const char* stage,
                                       int clear_count) {
@@ -283,6 +283,29 @@ static void epdiy_clear_pending_update() {
   s_pending_update_clear_count = 0;
 }
 
+static void epdiy_consume_next_update_clear(EpdRect* area,
+                                            int* clear_count,
+                                            const char* stage) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!s_next_update_clear_valid) {
+    return;
+  }
+
+  if (area) {
+    *area = epdiy_merge_area(*area, s_next_update_clear_area);
+    epdiy_log_area("merge requested clear", stage, *area);
+  }
+  if (clear_count) {
+    *clear_count =
+      epdiy_max_clear_count(*clear_count, s_next_update_clear_count);
+  }
+
+  s_next_update_clear_valid = false;
+  s_next_update_clear_area  = {0, 0, 0, 0};
+  s_next_update_clear_count = 0;
+#endif
+}
+
 static bool epdiy_prepare_update_area(EpdRect requested_area,
                                       EpdRect* update_area,
                                       int* clear_count,
@@ -291,6 +314,7 @@ static bool epdiy_prepare_update_area(EpdRect requested_area,
   EpdRect merged_area = epdiy_area_with_pending(requested_area, stage);
   int effective_clear_count =
     epdiy_pending_clear_count_with(requested_clear_count);
+  epdiy_consume_next_update_clear(&merged_area, &effective_clear_count, stage);
   if (update_area) {
     *update_area = merged_area;
   }
@@ -821,6 +845,27 @@ void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   epdiy_set_white(area);
   epd_clear_area_cycles(area, clear_count, clear_cycle_time);
+#endif
+}
+
+void epdiy_clear_before_next_update(EpdRect area, int clear_count) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!epdiy_area_is_valid(area) || clear_count <= 0) {
+    return;
+  }
+
+  epdiy_take_update_lock(portMAX_DELAY);
+  if (s_next_update_clear_valid) {
+    area = epdiy_merge_area(area, s_next_update_clear_area);
+    clear_count = epdiy_max_clear_count(clear_count,
+                                        s_next_update_clear_count);
+  }
+
+  s_next_update_clear_area  = area;
+  s_next_update_clear_count = clear_count;
+  s_next_update_clear_valid = true;
+  epdiy_log_area("request clear before next update", "next update", area);
+  epdiy_give_update_lock();
 #endif
 }
 
