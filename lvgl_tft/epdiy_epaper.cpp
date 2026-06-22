@@ -81,6 +81,13 @@ void epdiy_init(void) {
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   framebuffer = epd_hl_get_framebuffer(&hl);
   s_lcd_pclk_mhz = epd_get_display()->bus_speed;
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (s_lcd_pclk_mhz > 18) {
+    s_lcd_pclk_mhz = 18;
+    ESP_LOGI(TAG, "init lcd pixel clock capped to %d MHz", s_lcd_pclk_mhz);
+    epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
+  }
+#endif
   epdiy_set_16_grayscale_enabled(false);
 
 #if CONFIG_PM_ENABLE
