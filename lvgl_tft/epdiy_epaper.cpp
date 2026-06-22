@@ -165,6 +165,30 @@ static uint8_t epdiy_color_to_gray4(lv_color_t color) {
   return (brightness + 8) / 17;
 }
 
+static uint8_t epdiy_gray4_to_mono(uint8_t gray) {
+  return (gray & 0x0F) >= 8 ? 0x0F : 0x00;
+}
+
+static void epdiy_normalize_framebuffer_to_mono() {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!framebuffer) {
+    return;
+  }
+
+  int    width      = epd_rotated_display_width();
+  int    height     = epd_rotated_display_height();
+  size_t line_bytes = width / 2;
+  size_t size       = line_bytes * height;
+
+  for (size_t i = 0; i < size; i++) {
+    uint8_t value = framebuffer[i];
+    framebuffer[i] =
+      epdiy_gray4_to_mono(value & 0x0F) |
+      (epdiy_gray4_to_mono(value >> 4) << 4);
+  }
+#endif
+}
+
 static bool epdiy_take_update_lock(TickType_t timeout_ticks) {
   if (!epdiy_update_xMutex) {
     return true;
@@ -545,7 +569,11 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
 }
 
 void epdiy_set_16_grayscale_enabled(bool enabled) {
+  bool was_enabled = s_16_grayscale_enabled;
   s_16_grayscale_enabled = enabled;
+  if (was_enabled && !enabled) {
+    epdiy_normalize_framebuffer_to_mono();
+  }
   ESP_LOGW(TAG, "16 grayscale %s", enabled ? "enabled" : "disabled");
 }
 
