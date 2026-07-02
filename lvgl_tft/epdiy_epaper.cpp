@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <cstring>
 #include <time.h>
 #include <vector>
 
@@ -20,12 +21,12 @@ using namespace std;
 EpdiyHighlevelState hl;
 uint16_t            flushcalls = 0;
 uint8_t*            framebuffer;
-uint8_t             temperature       = 25;
-const int           _clear_cycle_time = 12;
-static int          s_lcd_pclk_mhz    = 20;
-static const int    EPDIY_LCD_PCLK_MIN_MHZ = 10;
+uint8_t             temperature             = 25;
+const int           _clear_cycle_time       = 12;
+static int          s_lcd_pclk_mhz          = 20;
+static const int    EPDIY_LCD_PCLK_MIN_MHZ  = 10;
 static const int    EPDIY_LCD_PCLK_STEP_MHZ = 2;
-static bool         s_16_grayscale_enabled = EPDIY_ENABLE_16_GRAYSCALE;
+static bool         s_16_grayscale_enabled  = EPDIY_ENABLE_16_GRAYSCALE;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 TaskHandle_t          _paint_task_handle;
@@ -34,12 +35,11 @@ void paint_task_cb(void* arg);
 enum EpdDrawError epdiy_repaint_full_screen(bool need_power = true);
 static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage);
 static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
-                                                      const char* stage);
+                                                      const char*       stage);
 static enum EpdDrawMode epdiy_current_update_mode();
-static uint8_t epdiy_color_to_gray4(lv_color_t color);
-static void epdiy_mark_pending_update(EpdRect area,
-                                      const char* stage,
-                                      int clear_count);
+static uint8_t          epdiy_color_to_gray4(lv_color_t color);
+static void
+epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count);
 static void epdiy_pending_update_retry_task(void* arg);
 static void epdiy_schedule_pending_update_retry();
 
@@ -52,19 +52,19 @@ typedef struct _paint_t {
 } paint_t;
 
 vector<paint_t>          paint_queue;
-static SemaphoreHandle_t paint_queue_xMutex = NULL;  // lock for paint_queue
+static SemaphoreHandle_t paint_queue_xMutex  = NULL;  // lock for paint_queue
 static SemaphoreHandle_t epdiy_update_xMutex = NULL;
-bool                     whole_repainting   = false;  // Whole repaint task
+bool                     whole_repainting    = false;  // Whole repaint task
 
-static const int EPDIY_PENDING_RETRY_DELAY_MS = 500;
-static bool      s_pending_update_valid        = false;
-static EpdRect   s_pending_update_area         = {0, 0, 0, 0};
-static bool      s_pending_update_use_gc16     = false;
-static int       s_pending_update_clear_count  = 0;
-static bool      s_pending_retry_task_running  = false;
-static bool      s_next_update_clear_valid     = false;
-static EpdRect   s_next_update_clear_area      = {0, 0, 0, 0};
-static int       s_next_update_clear_count     = 0;
+static const int               EPDIY_PENDING_RETRY_DELAY_MS = 500;
+static bool                    s_pending_update_valid       = false;
+static EpdRect                 s_pending_update_area        = {0, 0, 0, 0};
+static bool                    s_pending_update_use_gc16    = false;
+static int                     s_pending_update_clear_count = 0;
+static bool                    s_pending_retry_task_running = false;
+static bool                    s_next_update_clear_valid    = false;
+static EpdRect                 s_next_update_clear_area     = {0, 0, 0, 0};
+static int                     s_next_update_clear_count    = 0;
 static const enum EpdDrawError EPDIY_DRAW_POWER_VERIFY_FAILED =
   (enum EpdDrawError)0x800;
 
@@ -82,7 +82,7 @@ void epdiy_init(void) {
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   epd_set_rotation(EPD_ROT_LANDSCAPE);
-  framebuffer = epd_hl_get_framebuffer(&hl);
+  framebuffer    = epd_hl_get_framebuffer(&hl);
   s_lcd_pclk_mhz = epd_get_display()->bus_speed;
   epdiy_set_16_grayscale_enabled(false);
 
@@ -144,7 +144,7 @@ static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage) {
 }
 
 static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
-                                                      const char* stage) {
+                                                      const char*       stage) {
   if (!epdiy_handle_draw_error(err, stage)) {
     return;
   }
@@ -184,10 +184,9 @@ static void epdiy_normalize_framebuffer_to_mono() {
   size_t size       = line_bytes * height;
 
   for (size_t i = 0; i < size; i++) {
-    uint8_t value = framebuffer[i];
-    framebuffer[i] =
-      epdiy_gray4_to_mono(value & 0x0F) |
-      (epdiy_gray4_to_mono(value >> 4) << 4);
+    uint8_t value  = framebuffer[i];
+    framebuffer[i] = epdiy_gray4_to_mono(value & 0x0F) |
+                     (epdiy_gray4_to_mono(value >> 4) << 4);
   }
 #endif
 }
@@ -210,24 +209,23 @@ static bool epdiy_area_is_valid(EpdRect area) {
 }
 
 static EpdRect epdiy_merge_area(EpdRect first, EpdRect second) {
-  int x1 = first.x < second.x ? first.x : second.x;
-  int y1 = first.y < second.y ? first.y : second.y;
-  int x2_first = first.x + first.width;
-  int y2_first = first.y + first.height;
+  int x1        = first.x < second.x ? first.x : second.x;
+  int y1        = first.y < second.y ? first.y : second.y;
+  int x2_first  = first.x + first.width;
+  int y2_first  = first.y + first.height;
   int x2_second = second.x + second.width;
   int y2_second = second.y + second.height;
-  int x2 = x2_first > x2_second ? x2_first : x2_second;
-  int y2 = y2_first > y2_second ? y2_first : y2_second;
+  int x2        = x2_first > x2_second ? x2_first : x2_second;
+  int y2        = y2_first > y2_second ? y2_first : y2_second;
 
-  EpdRect merged = {
-    .x = x1, .y = y1, .width = x2 - x1, .height = y2 - y1};
+  EpdRect merged = {.x = x1, .y = y1, .width = x2 - x1, .height = y2 - y1};
   return merged;
 }
 
-static void epdiy_log_area(const char* prefix, const char* stage, EpdRect area) {
+static void
+epdiy_log_area(const char* prefix, const char* stage, EpdRect area) {
   ESP_LOGW(TAG, "%s %s area x=%d y=%d w=%d h=%d", stage ? stage : "update",
-           prefix, (int)area.x, (int)area.y, (int)area.width,
-           (int)area.height);
+           prefix, (int)area.x, (int)area.y, (int)area.width, (int)area.height);
 }
 
 static EpdRect epdiy_area_with_pending(EpdRect area, const char* stage) {
@@ -250,24 +248,23 @@ static int epdiy_max_clear_count(int first, int second) {
   return first > second ? first : second;
 }
 
-static void epdiy_mark_pending_update(EpdRect area,
-                                      const char* stage,
-                                      int clear_count) {
+static void
+epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count) {
   if (!epdiy_area_is_valid(area)) {
     return;
   }
 
   bool use_gc16 = epdiy_is_16_grayscale_enabled();
-  clear_count = epdiy_pending_clear_count_with(clear_count);
+  clear_count   = epdiy_pending_clear_count_with(clear_count);
   if (s_pending_update_valid) {
-    area = epdiy_merge_area(area, s_pending_update_area);
+    area     = epdiy_merge_area(area, s_pending_update_area);
     use_gc16 = use_gc16 || s_pending_update_use_gc16;
   }
 
-  s_pending_update_area     = area;
-  s_pending_update_use_gc16 = use_gc16;
+  s_pending_update_area        = area;
+  s_pending_update_use_gc16    = use_gc16;
   s_pending_update_clear_count = clear_count;
-  s_pending_update_valid    = true;
+  s_pending_update_valid       = true;
   if (clear_count > 0) {
     epdiy_log_area(use_gc16 ? "pending clear GC16" : "pending clear DU", stage,
                    area);
@@ -278,13 +275,13 @@ static void epdiy_mark_pending_update(EpdRect area,
 }
 
 static void epdiy_clear_pending_update() {
-  s_pending_update_valid    = false;
-  s_pending_update_use_gc16 = false;
+  s_pending_update_valid       = false;
+  s_pending_update_use_gc16    = false;
   s_pending_update_clear_count = 0;
 }
 
-static void epdiy_consume_next_update_clear(EpdRect* area,
-                                            int* clear_count,
+static void epdiy_consume_next_update_clear(EpdRect*    area,
+                                            int*        clear_count,
                                             const char* stage) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   if (!s_next_update_clear_valid) {
@@ -306,13 +303,13 @@ static void epdiy_consume_next_update_clear(EpdRect* area,
 #endif
 }
 
-static bool epdiy_prepare_update_area(EpdRect requested_area,
-                                      EpdRect* update_area,
-                                      int* clear_count,
+static bool epdiy_prepare_update_area(EpdRect     requested_area,
+                                      EpdRect*    update_area,
+                                      int*        clear_count,
                                       const char* stage,
-                                      int requested_clear_count) {
+                                      int         requested_clear_count) {
   EpdRect merged_area = epdiy_area_with_pending(requested_area, stage);
-  int effective_clear_count =
+  int     effective_clear_count =
     epdiy_pending_clear_count_with(requested_clear_count);
   epdiy_consume_next_update_clear(&merged_area, &effective_clear_count, stage);
   if (update_area) {
@@ -343,9 +340,8 @@ static bool epdiy_verify_power_after_update(const char* stage) {
 #endif
 }
 
-static enum EpdDrawError epdiy_update_prepared_area(EpdRect area,
-                                                    const char* stage,
-                                                    int clear_count) {
+static enum EpdDrawError
+epdiy_update_prepared_area(EpdRect area, const char* stage, int clear_count) {
   enum EpdDrawMode mode =
     (s_pending_update_valid && s_pending_update_use_gc16) ?
       MODE_GL16 :
@@ -373,9 +369,8 @@ static void epdiy_schedule_pending_update_retry() {
   }
 
   s_pending_retry_task_running = true;
-  BaseType_t ret =
-    xTaskCreate(&epdiy_pending_update_retry_task, "epdiy_pending_retry",
-                1024 * 4, NULL, 4, NULL);
+  BaseType_t ret = xTaskCreate(&epdiy_pending_update_retry_task,
+                               "epdiy_pending_retry", 1024 * 4, NULL, 4, NULL);
   if (ret != pdPASS) {
     s_pending_retry_task_running = false;
     ESP_LOGW(TAG, "create pending update retry task failed");
@@ -408,9 +403,8 @@ static void epdiy_pending_update_retry_task(void* arg) {
 
   EpdRect update_area;
   int     clear_count = 0;
-  bool    did_poweron =
-    epdiy_prepare_update_area(area, &update_area, &clear_count,
-                              "pending retry", 0);
+  bool did_poweron = epdiy_prepare_update_area(area, &update_area, &clear_count,
+                                               "pending retry", 0);
   if (did_poweron) {
     enum EpdDrawError err =
       epdiy_update_prepared_area(update_area, "pending retry", clear_count);
@@ -537,13 +531,11 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     } else {
       int  clear_count = 0;
       bool update_ok   = false;
-      bool did_poweron =
-        epdiy_prepare_update_area(update_area, &update_area, &clear_count,
-                                  "partial update", 0);
+      bool did_poweron = epdiy_prepare_update_area(
+        update_area, &update_area, &clear_count, "partial update", 0);
       if (did_poweron) {
-        auto err =
-          epdiy_update_prepared_area(update_area, "partial update",
-                                     clear_count);
+        auto err  = epdiy_update_prepared_area(update_area, "partial update",
+                                               clear_count);
         update_ok = err == EPD_DRAW_SUCCESS;
         if (err != EPD_DRAW_SUCCESS) {
           epdiy_force_full_repaint_after_draw_error(err, "partial update");
@@ -600,7 +592,7 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
 }
 
 void epdiy_set_16_grayscale_enabled(bool enabled) {
-  bool was_enabled = s_16_grayscale_enabled;
+  bool was_enabled       = s_16_grayscale_enabled;
   s_16_grayscale_enabled = enabled;
   if (was_enabled && !enabled) {
     epdiy_normalize_framebuffer_to_mono();
@@ -667,9 +659,8 @@ void paint_task_cb(void* arg) {
         } else {
           int  clear_count = 0;
           bool update_ok   = false;
-          bool did_poweron =
-            epdiy_prepare_update_area(area, &area, &clear_count,
-                                      "partial update", 0);
+          bool did_poweron = epdiy_prepare_update_area(
+            area, &area, &clear_count, "partial update", 0);
           if (did_poweron) {
             auto err =
               epdiy_update_prepared_area(area, "partial update", clear_count);
@@ -856,9 +847,8 @@ void epdiy_clear_before_next_update(EpdRect area, int clear_count) {
 
   epdiy_take_update_lock(portMAX_DELAY);
   if (s_next_update_clear_valid) {
-    area = epdiy_merge_area(area, s_next_update_clear_area);
-    clear_count = epdiy_max_clear_count(clear_count,
-                                        s_next_update_clear_count);
+    area        = epdiy_merge_area(area, s_next_update_clear_area);
+    clear_count = epdiy_max_clear_count(clear_count, s_next_update_clear_count);
   }
 
   s_next_update_clear_area  = area;
@@ -890,6 +880,94 @@ void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray) {
 #endif
 }
 
+static bool epdiy_framebuffer_area_is_valid(EpdRect area) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  int display_width  = epd_rotated_display_width();
+  int display_height = epd_rotated_display_height();
+  // 4-bit framebuffer packs two pixels per byte. Snapshot/restore only handles
+  // byte-aligned rectangles so copying can stay row-based and cheap.
+  return framebuffer && area.width > 0 && area.height > 0 && area.x >= 0 &&
+         area.y >= 0 && area.x + area.width <= display_width &&
+         area.y + area.height <= display_height && area.x % 2 == 0 &&
+         area.width % 2 == 0;
+#else
+  return false;
+#endif
+}
+
+size_t epdiy_framebuffer_area_snapshot_size(EpdRect area) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!epdiy_framebuffer_area_is_valid(area)) {
+    return 0;
+  }
+  return (size_t)(area.width / 2) * (size_t)area.height;
+#else
+  return 0;
+#endif
+}
+
+static bool epdiy_copy_framebuffer_area(EpdRect  area,
+                                        uint8_t* buffer,
+                                        size_t   buffer_size,
+                                        bool     restore) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  size_t required = epdiy_framebuffer_area_snapshot_size(area);
+  if (required == 0 || !buffer || buffer_size < required) {
+    return false;
+  }
+
+  size_t   row_bytes         = (size_t)area.width / 2;
+  size_t   framebuffer_pitch = (size_t)epd_rotated_display_width() / 2;
+  uint8_t* framebuffer_row =
+    framebuffer + (size_t)area.y * framebuffer_pitch + (size_t)area.x / 2;
+
+  // The screen pitch can be wider than the copied rect, so copy row by row.
+  for (int row = 0; row < area.height; row++) {
+    uint8_t* framebuffer_line =
+      framebuffer_row + (size_t)row * framebuffer_pitch;
+    uint8_t* buffer_line = buffer + (size_t)row * row_bytes;
+    if (restore) {
+      memcpy(framebuffer_line, buffer_line, row_bytes);
+    } else {
+      memcpy(buffer_line, framebuffer_line, row_bytes);
+    }
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool epdiy_snapshot_framebuffer_area(EpdRect  area,
+                                     uint8_t* buffer,
+                                     size_t   buffer_size) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  return epdiy_copy_framebuffer_area(area, buffer, buffer_size, false);
+#else
+  return false;
+#endif
+}
+
+bool epdiy_restore_framebuffer_area(EpdRect        area,
+                                    const uint8_t* buffer,
+                                    size_t         buffer_size,
+                                    bool           repaint) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  bool restored = epdiy_copy_framebuffer_area(
+    area, const_cast<uint8_t*>(buffer), buffer_size, true);
+  if (!restored) {
+    return false;
+  }
+
+  if (!repaint) {
+    return true;
+  }
+  return epdiy_update_framebuffer_area(area) == EPD_DRAW_SUCCESS;
+#else
+  return false;
+#endif
+}
+
 int epdiy_update_framebuffer_area(EpdRect area) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   enum EpdDrawError err = EPD_DRAW_SUCCESS;
@@ -902,9 +980,8 @@ int epdiy_update_framebuffer_area(EpdRect area) {
 
   EpdRect update_area;
   int     clear_count = 0;
-  bool    did_poweron =
-    epdiy_prepare_update_area(area, &update_area, &clear_count,
-                              "framebuffer update", 0);
+  bool did_poweron = epdiy_prepare_update_area(area, &update_area, &clear_count,
+                                               "framebuffer update", 0);
   if (did_poweron) {
     err = epdiy_update_prepared_area(update_area, "framebuffer update",
                                      clear_count);
@@ -932,7 +1009,7 @@ int epdiy_update_framebuffer_area(EpdRect area) {
 enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 
-  enum EpdDrawError err = EPD_DRAW_SUCCESS;
+  enum EpdDrawError err  = EPD_DRAW_SUCCESS;
   EpdRect           area = epd_full_screen();
 
   epdiy_take_update_lock(portMAX_DELAY);
@@ -943,7 +1020,7 @@ enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
     can_update =
       epdiy_prepare_update_area(area, &area, &clear_count, "full repaint", 1);
   } else {
-    area = epdiy_area_with_pending(area, "full repaint");
+    area        = epdiy_area_with_pending(area, "full repaint");
     clear_count = epdiy_pending_clear_count_with(1);
   }
 
@@ -983,8 +1060,8 @@ void epdiy_repaint(EpdRect area) {
   int     clear_count = 1;
   if (epdiy_prepare_update_area(area, &update_area, &clear_count,
                                 "repaint area", 1)) {
-    auto err = epdiy_update_prepared_area(update_area, "repaint area",
-                                          clear_count);
+    auto err =
+      epdiy_update_prepared_area(update_area, "repaint area", clear_count);
     if (err != EPD_DRAW_SUCCESS) {
       epdiy_force_full_repaint_after_draw_error(err, "repaint area");
     }

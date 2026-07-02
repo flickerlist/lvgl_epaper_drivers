@@ -92,6 +92,16 @@ void epdiy_clear_before_next_update(EpdRect area, int clear_count);
 /* write a 4-bit grayscale pixel into the epdiy framebuffer */
 void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray);
 
+/* snapshot/restore a byte-aligned 4-bit framebuffer area */
+size_t epdiy_framebuffer_area_snapshot_size(EpdRect area);
+bool   epdiy_snapshot_framebuffer_area(EpdRect  area,
+                                       uint8_t* buffer,
+                                       size_t   buffer_size);
+bool   epdiy_restore_framebuffer_area(EpdRect        area,
+                                      const uint8_t* buffer,
+                                      size_t         buffer_size,
+                                      bool           repaint);
+
 /* update an area already written into the epdiy framebuffer */
 int epdiy_update_framebuffer_area(EpdRect area);
 
