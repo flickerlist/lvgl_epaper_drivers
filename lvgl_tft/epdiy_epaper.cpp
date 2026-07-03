@@ -1,5 +1,6 @@
 #include "epdiy_epaper.h"
 #include "epd_highlevel.h"
+#include "epdiy_refresh_policy.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
@@ -24,7 +25,8 @@ uint8_t*            framebuffer;
 uint8_t             temperature             = 25;
 const int           _clear_cycle_time       = 12;
 static int          s_lcd_pclk_mhz          = 20;
-static const int    EPDIY_LCD_PCLK_MIN_MHZ  = 10;
+static int          s_lcd_pclk_default_mhz  = 20;
+static const int    EPDIY_LCD_PCLK_MIN_MHZ  = EPDIY_GC16_STABLE_LCD_PCLK_MHZ;
 static const int    EPDIY_LCD_PCLK_STEP_MHZ = 2;
 static bool         s_16_grayscale_enabled  = EPDIY_ENABLE_16_GRAYSCALE;
 
@@ -62,9 +64,6 @@ static EpdRect                 s_pending_update_area        = {0, 0, 0, 0};
 static bool                    s_pending_update_use_gc16    = false;
 static int                     s_pending_update_clear_count = 0;
 static bool                    s_pending_retry_task_running = false;
-static bool                    s_next_update_clear_valid    = false;
-static EpdRect                 s_next_update_clear_area     = {0, 0, 0, 0};
-static int                     s_next_update_clear_count    = 0;
 static const enum EpdDrawError EPDIY_DRAW_POWER_VERIFY_FAILED =
   (enum EpdDrawError)0x800;
 
@@ -82,8 +81,9 @@ void epdiy_init(void) {
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   epd_set_rotation(EPD_ROT_LANDSCAPE);
-  framebuffer    = epd_hl_get_framebuffer(&hl);
-  s_lcd_pclk_mhz = epd_get_display()->bus_speed;
+  framebuffer            = epd_hl_get_framebuffer(&hl);
+  s_lcd_pclk_default_mhz = epd_get_display()->bus_speed;
+  s_lcd_pclk_mhz         = s_lcd_pclk_default_mhz;
   epdiy_set_16_grayscale_enabled(false);
 
 #if CONFIG_PM_ENABLE
@@ -128,6 +128,20 @@ static bool epdiy_reduce_lcd_pclk_after_underrun(const char* stage) {
            stage ? stage : "draw", s_lcd_pclk_mhz);
 #endif
   return false;
+}
+
+static void epdiy_set_lcd_pclk_if_changed(int target_mhz, const char* reason) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (target_mhz <= 0 || target_mhz == s_lcd_pclk_mhz) {
+    return;
+  }
+
+  s_lcd_pclk_mhz = target_mhz;
+  epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
+#else
+  (void)target_mhz;
+  (void)reason;
+#endif
 }
 
 static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage) {
@@ -244,10 +258,6 @@ static int epdiy_pending_clear_count_with(int requested_clear_count) {
            s_pending_update_clear_count;
 }
 
-static int epdiy_max_clear_count(int first, int second) {
-  return first > second ? first : second;
-}
-
 static void
 epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count) {
   if (!epdiy_area_is_valid(area)) {
@@ -280,29 +290,6 @@ static void epdiy_clear_pending_update() {
   s_pending_update_clear_count = 0;
 }
 
-static void epdiy_consume_next_update_clear(EpdRect*    area,
-                                            int*        clear_count,
-                                            const char* stage) {
-#ifdef CONFIG_IDF_TARGET_ESP32S3
-  if (!s_next_update_clear_valid) {
-    return;
-  }
-
-  if (area) {
-    *area = epdiy_merge_area(*area, s_next_update_clear_area);
-    epdiy_log_area("merge requested clear", stage, *area);
-  }
-  if (clear_count) {
-    *clear_count =
-      epdiy_max_clear_count(*clear_count, s_next_update_clear_count);
-  }
-
-  s_next_update_clear_valid = false;
-  s_next_update_clear_area  = {0, 0, 0, 0};
-  s_next_update_clear_count = 0;
-#endif
-}
-
 static bool epdiy_prepare_update_area(EpdRect     requested_area,
                                       EpdRect*    update_area,
                                       int*        clear_count,
@@ -311,7 +298,6 @@ static bool epdiy_prepare_update_area(EpdRect     requested_area,
   EpdRect merged_area = epdiy_area_with_pending(requested_area, stage);
   int     effective_clear_count =
     epdiy_pending_clear_count_with(requested_clear_count);
-  epdiy_consume_next_update_clear(&merged_area, &effective_clear_count, stage);
   if (update_area) {
     *update_area = merged_area;
   }
@@ -347,7 +333,6 @@ epdiy_update_prepared_area(EpdRect area, const char* stage, int clear_count) {
       MODE_GL16 :
       epdiy_current_update_mode();
   if (clear_count > 0) {
-    epdiy_log_area("clear before update", stage, area);
     epdiy_clear_to_white(area, clear_count, _clear_cycle_time);
   }
   enum EpdDrawError err = epd_hl_update_area(&hl, mode, temperature, area);
@@ -594,6 +579,10 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
 void epdiy_set_16_grayscale_enabled(bool enabled) {
   bool was_enabled       = s_16_grayscale_enabled;
   s_16_grayscale_enabled = enabled;
+  int target_pclk =
+    epdiy_lcd_pclk_for_refresh_mode(s_lcd_pclk_default_mhz, enabled);
+  epdiy_set_lcd_pclk_if_changed(target_pclk,
+                                enabled ? "enable GC16" : "disable GC16");
   if (was_enabled && !enabled) {
     epdiy_normalize_framebuffer_to_mono();
   }
@@ -836,26 +825,6 @@ void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   epdiy_set_white(area);
   epd_clear_area_cycles(area, clear_count, clear_cycle_time);
-#endif
-}
-
-void epdiy_clear_before_next_update(EpdRect area, int clear_count) {
-#ifdef CONFIG_IDF_TARGET_ESP32S3
-  if (!epdiy_area_is_valid(area) || clear_count <= 0) {
-    return;
-  }
-
-  epdiy_take_update_lock(portMAX_DELAY);
-  if (s_next_update_clear_valid) {
-    area        = epdiy_merge_area(area, s_next_update_clear_area);
-    clear_count = epdiy_max_clear_count(clear_count, s_next_update_clear_count);
-  }
-
-  s_next_update_clear_area  = area;
-  s_next_update_clear_count = clear_count;
-  s_next_update_clear_valid = true;
-  epdiy_log_area("request clear before next update", "next update", area);
-  epdiy_give_update_lock();
 #endif
 }
 

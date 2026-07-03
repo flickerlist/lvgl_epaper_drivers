@@ -86,9 +86,6 @@ bool epdiy_is_locking_poweron();
 /* set area to white */
 void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time);
 
-/* request a white clear inside the next normal LVGL update */
-void epdiy_clear_before_next_update(EpdRect area, int clear_count);
-
 /* write a 4-bit grayscale pixel into the epdiy framebuffer */
 void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray);
 
