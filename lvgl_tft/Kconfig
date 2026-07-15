@@ -255,6 +255,16 @@ menu "LVGL TFT/Epaper Display controller"
         bool
         help
             A monochrome display is used.
+
+    config LV_EPAPER_EPDIY_16_GRAYSCALE
+        bool "Enable EPDiy 16 grayscale by default"
+        depends on LV_EPAPER_EPDIY_DISPLAY_CONTROLLER
+        default n
+        help
+            Use MODE_GC16 and 4-bit grayscale framebuffer conversion by default.
+            When disabled, the driver keeps the existing fast monochrome MODE_DU
+            conversion. Runtime code can still switch this with
+            epdiy_set_16_grayscale_enabled().
     # END of helper symbols
 
     choice

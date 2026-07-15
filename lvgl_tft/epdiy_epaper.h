@@ -17,6 +17,14 @@ extern "C" {
 #endif
 #include "sdkconfig.h"
 
+#ifndef EPDIY_ENABLE_16_GRAYSCALE
+  #ifdef CONFIG_LV_EPAPER_EPDIY_16_GRAYSCALE
+    #define EPDIY_ENABLE_16_GRAYSCALE CONFIG_LV_EPAPER_EPDIY_16_GRAYSCALE
+  #else
+    #define EPDIY_ENABLE_16_GRAYSCALE 0
+  #endif
+#endif
+
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   #include <epdiy.h>
 #else
@@ -52,6 +60,10 @@ typedef lvgl_epdiy_flush_type_t (*epdiy_flush_type_cb_t)(EpdRect* area,
                                                          int      flush_count);
 void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb);
 
+/* Global grayscale switch. Disabled keeps the fast monochrome path. */
+void epdiy_set_16_grayscale_enabled(bool enabled);
+bool epdiy_is_16_grayscale_enabled();
+
 /* refresh all screen */
 void epdiy_repaint_all();
 
@@ -73,6 +85,22 @@ bool epdiy_is_locking_poweron();
 
 /* set area to white */
 void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time);
+
+/* write a 4-bit grayscale pixel into the epdiy framebuffer */
+void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray);
+
+/* snapshot/restore a byte-aligned 4-bit framebuffer area */
+size_t epdiy_framebuffer_area_snapshot_size(EpdRect area);
+bool   epdiy_snapshot_framebuffer_area(EpdRect  area,
+                                       uint8_t* buffer,
+                                       size_t   buffer_size);
+bool   epdiy_restore_framebuffer_area(EpdRect        area,
+                                      const uint8_t* buffer,
+                                      size_t         buffer_size,
+                                      bool           repaint);
+
+/* update an area already written into the epdiy framebuffer */
+int epdiy_update_framebuffer_area(EpdRect area);
 
 /* refresh area */
 void epdiy_repaint(EpdRect area);

@@ -1,11 +1,13 @@
 #include "epdiy_epaper.h"
 #include "epd_highlevel.h"
+#include "epdiy_refresh_policy.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <cstring>
 #include <time.h>
 #include <vector>
 
@@ -20,18 +22,28 @@ using namespace std;
 EpdiyHighlevelState hl;
 uint16_t            flushcalls = 0;
 uint8_t*            framebuffer;
-uint8_t             temperature       = 25;
-const int           _clear_cycle_time = 12;
-static int          s_lcd_pclk_mhz    = 20;
-// MODE_DU: Fast monochrome | MODE_GC16 slow with 16 grayscales
-enum EpdDrawMode updateMode = MODE_DU;
+uint8_t             temperature             = 25;
+const int           _clear_cycle_time       = 12;
+static int          s_lcd_pclk_mhz          = 20;
+static int          s_lcd_pclk_default_mhz  = 20;
+static const int    EPDIY_LCD_PCLK_MIN_MHZ  = EPDIY_GC16_STABLE_LCD_PCLK_MHZ;
+static const int    EPDIY_LCD_PCLK_STEP_MHZ = 2;
+static bool         s_16_grayscale_enabled  = EPDIY_ENABLE_16_GRAYSCALE;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 TaskHandle_t          _paint_task_handle;
-void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data);
+void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data);
 void paint_task_cb(void* arg);
-void epdiy_repaint_full_screen(bool need_power = true);
-static void epdiy_handle_draw_error(enum EpdDrawError err);
+enum EpdDrawError epdiy_repaint_full_screen(bool need_power = true);
+static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage);
+static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
+                                                      const char*       stage);
+static enum EpdDrawMode epdiy_current_update_mode();
+static uint8_t          epdiy_color_to_gray4(lv_color_t color);
+static void
+epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count);
+static void epdiy_pending_update_retry_task(void* arg);
+static void epdiy_schedule_pending_update_retry();
 
 typedef struct _paint_t {
   lvgl_epdiy_flush_type_t paint_type;
@@ -42,8 +54,18 @@ typedef struct _paint_t {
 } paint_t;
 
 vector<paint_t>          paint_queue;
-static SemaphoreHandle_t paint_queue_xMutex = NULL;  // lock for paint_queue
-bool                     whole_repainting   = false;  // Whole repaint task
+static SemaphoreHandle_t paint_queue_xMutex  = NULL;  // lock for paint_queue
+static SemaphoreHandle_t epdiy_update_xMutex = NULL;
+bool                     whole_repainting    = false;  // Whole repaint task
+
+static const int               EPDIY_PENDING_RETRY_DELAY_MS = 500;
+static bool                    s_pending_update_valid       = false;
+static EpdRect                 s_pending_update_area        = {0, 0, 0, 0};
+static bool                    s_pending_update_use_gc16    = false;
+static int                     s_pending_update_clear_count = 0;
+static bool                    s_pending_retry_task_running = false;
+static const enum EpdDrawError EPDIY_DRAW_POWER_VERIFY_FAILED =
+  (enum EpdDrawError)0x800;
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;
@@ -51,14 +73,18 @@ static esp_pm_lock_handle_t epdiy_pm_lock;
 
 /* Display initialization routine */
 void epdiy_init(void) {
+  epdiy_update_xMutex = xSemaphoreCreateRecursiveMutex();
+
 #ifdef USE_PARALLEL_PAINT
   paint_queue_xMutex = xSemaphoreCreateMutex();
 #endif
 
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   epd_set_rotation(EPD_ROT_LANDSCAPE);
-  framebuffer = epd_hl_get_framebuffer(&hl);
-  s_lcd_pclk_mhz = epd_get_display()->bus_speed;
+  framebuffer            = epd_hl_get_framebuffer(&hl);
+  s_lcd_pclk_default_mhz = epd_get_display()->bus_speed;
+  s_lcd_pclk_mhz         = s_lcd_pclk_default_mhz;
+  epdiy_set_16_grayscale_enabled(false);
 
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "epdiy_pm_lock",
@@ -69,6 +95,8 @@ void epdiy_init(void) {
   //   Clear all always in init:
   if (epdiy_auto_poweron()) {
     epd_clear_area_cycles(epd_full_screen(), 2, _clear_cycle_time);
+  } else {
+    epdiy_mark_pending_update(epd_full_screen(), "init clear", 2);
   }
   if (!epdiy_is_locking_poweron()) {
     epd_poweroff();
@@ -84,31 +112,317 @@ void epdiy_init(void) {
 #endif
 }
 
-static void epdiy_handle_draw_error(enum EpdDrawError err) {
+static bool epdiy_reduce_lcd_pclk_after_underrun(const char* stage) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
+  int next_pclk = s_lcd_pclk_mhz > EPDIY_LCD_PCLK_MIN_MHZ ?
+                    s_lcd_pclk_mhz - EPDIY_LCD_PCLK_STEP_MHZ :
+                    EPDIY_LCD_PCLK_MIN_MHZ;
+  if (next_pclk != s_lcd_pclk_mhz) {
+    s_lcd_pclk_mhz = next_pclk;
+    ESP_LOGW(TAG, "%s underrun, reduce lcd pixel clock to %d MHz",
+             stage ? stage : "draw", s_lcd_pclk_mhz);
+    epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
+    return true;
+  }
+  ESP_LOGW(TAG, "%s underrun, lcd pixel clock already at minimum %d MHz",
+           stage ? stage : "draw", s_lcd_pclk_mhz);
+#endif
+  return false;
+}
+
+static void epdiy_set_lcd_pclk_if_changed(int target_mhz, const char* reason) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (target_mhz <= 0 || target_mhz == s_lcd_pclk_mhz) {
+    return;
+  }
+
+  s_lcd_pclk_mhz = target_mhz;
+  epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
+#else
+  (void)target_mhz;
+  (void)reason;
+#endif
+}
+
+static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage) {
+  if (err == EPD_DRAW_SUCCESS) {
+    return false;
+  }
+  ESP_LOGW(TAG, "%s failed, draw error=0x%x", stage ? stage : "draw",
+           (unsigned)err);
   if (err & EPD_DRAW_EMPTY_LINE_QUEUE) {
-    int next_pclk = s_lcd_pclk_mhz > 10 ? s_lcd_pclk_mhz - 2 : 10;
-    if (next_pclk != s_lcd_pclk_mhz) {
-      s_lcd_pclk_mhz = next_pclk;
-      ESP_LOGW(TAG, "draw underrun, reduce lcd pixel clock to %d MHz",
-               s_lcd_pclk_mhz);
-      epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
-    } else {
-      ESP_LOGW(TAG, "draw underrun, lcd pixel clock already at minimum %d MHz",
-               s_lcd_pclk_mhz);
-    }
+    epdiy_reduce_lcd_pclk_after_underrun(stage);
+    return true;
+  }
+  return false;
+}
+
+static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
+                                                      const char*       stage) {
+  if (!epdiy_handle_draw_error(err, stage)) {
+    return;
+  }
+
+  ESP_LOGW(TAG, "%s underrun, force full screen repaint",
+           stage ? stage : "draw");
+  epdiy_repaint_full_screen(false);
+}
+
+static enum EpdDrawMode epdiy_current_update_mode() {
+  // MODE_DU: fast monochrome; MODE_GL16: slower non-flashing 16 grayscale.
+  return epdiy_is_16_grayscale_enabled() ? MODE_GL16 : MODE_DU;
+}
+
+static uint8_t epdiy_color_to_gray4(lv_color_t color) {
+  if (!epdiy_is_16_grayscale_enabled()) {
+    return lv_color_to1(color) ? 0x0F : 0x00;
+  }
+
+  uint8_t brightness = lv_color_brightness(color);
+  return (brightness + 8) / 17;
+}
+
+static uint8_t epdiy_gray4_to_mono(uint8_t gray) {
+  return (gray & 0x0F) >= 8 ? 0x0F : 0x00;
+}
+
+static void epdiy_normalize_framebuffer_to_mono() {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!framebuffer) {
+    return;
+  }
+
+  int    width      = epd_rotated_display_width();
+  int    height     = epd_rotated_display_height();
+  size_t line_bytes = width / 2;
+  size_t size       = line_bytes * height;
+
+  for (size_t i = 0; i < size; i++) {
+    uint8_t value  = framebuffer[i];
+    framebuffer[i] = epdiy_gray4_to_mono(value & 0x0F) |
+                     (epdiy_gray4_to_mono(value >> 4) << 4);
   }
 #endif
 }
 
+static bool epdiy_take_update_lock(TickType_t timeout_ticks) {
+  if (!epdiy_update_xMutex) {
+    return true;
+  }
+  return xSemaphoreTakeRecursive(epdiy_update_xMutex, timeout_ticks) == pdTRUE;
+}
+
+static void epdiy_give_update_lock() {
+  if (epdiy_update_xMutex) {
+    xSemaphoreGiveRecursive(epdiy_update_xMutex);
+  }
+}
+
+static bool epdiy_area_is_valid(EpdRect area) {
+  return area.width > 0 && area.height > 0;
+}
+
+static EpdRect epdiy_merge_area(EpdRect first, EpdRect second) {
+  int x1        = first.x < second.x ? first.x : second.x;
+  int y1        = first.y < second.y ? first.y : second.y;
+  int x2_first  = first.x + first.width;
+  int y2_first  = first.y + first.height;
+  int x2_second = second.x + second.width;
+  int y2_second = second.y + second.height;
+  int x2        = x2_first > x2_second ? x2_first : x2_second;
+  int y2        = y2_first > y2_second ? y2_first : y2_second;
+
+  EpdRect merged = {.x = x1, .y = y1, .width = x2 - x1, .height = y2 - y1};
+  return merged;
+}
+
+static void
+epdiy_log_area(const char* prefix, const char* stage, EpdRect area) {
+  ESP_LOGW(TAG, "%s %s area x=%d y=%d w=%d h=%d", stage ? stage : "update",
+           prefix, (int)area.x, (int)area.y, (int)area.width, (int)area.height);
+}
+
+static EpdRect epdiy_area_with_pending(EpdRect area, const char* stage) {
+  if (!s_pending_update_valid) {
+    return area;
+  }
+
+  EpdRect merged = epdiy_merge_area(area, s_pending_update_area);
+  epdiy_log_area("merge pending", stage, merged);
+  return merged;
+}
+
+static int epdiy_pending_clear_count_with(int requested_clear_count) {
+  return requested_clear_count > s_pending_update_clear_count ?
+           requested_clear_count :
+           s_pending_update_clear_count;
+}
+
+static void
+epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count) {
+  if (!epdiy_area_is_valid(area)) {
+    return;
+  }
+
+  bool use_gc16 = epdiy_is_16_grayscale_enabled();
+  clear_count   = epdiy_pending_clear_count_with(clear_count);
+  if (s_pending_update_valid) {
+    area     = epdiy_merge_area(area, s_pending_update_area);
+    use_gc16 = use_gc16 || s_pending_update_use_gc16;
+  }
+
+  s_pending_update_area        = area;
+  s_pending_update_use_gc16    = use_gc16;
+  s_pending_update_clear_count = clear_count;
+  s_pending_update_valid       = true;
+  if (clear_count > 0) {
+    epdiy_log_area(use_gc16 ? "pending clear GC16" : "pending clear DU", stage,
+                   area);
+  } else {
+    epdiy_log_area(use_gc16 ? "pending GC16" : "pending DU", stage, area);
+  }
+  epdiy_schedule_pending_update_retry();
+}
+
+static void epdiy_clear_pending_update() {
+  s_pending_update_valid       = false;
+  s_pending_update_use_gc16    = false;
+  s_pending_update_clear_count = 0;
+}
+
+static bool epdiy_prepare_update_area(EpdRect     requested_area,
+                                      EpdRect*    update_area,
+                                      int*        clear_count,
+                                      const char* stage,
+                                      int         requested_clear_count) {
+  EpdRect merged_area = epdiy_area_with_pending(requested_area, stage);
+  int     effective_clear_count =
+    epdiy_pending_clear_count_with(requested_clear_count);
+  if (update_area) {
+    *update_area = merged_area;
+  }
+  if (clear_count) {
+    *clear_count = effective_clear_count;
+  }
+
+  if (epdiy_auto_poweron()) {
+    return true;
+  }
+
+  epdiy_mark_pending_update(merged_area, stage, effective_clear_count);
+  return false;
+}
+
+static bool epdiy_verify_power_after_update(const char* stage) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (epd_poweron()) {
+    return true;
+  }
+  ESP_LOGW(TAG, "%s power check failed after draw; keep update pending",
+           stage ? stage : "draw");
+  return false;
+#else
+  return true;
+#endif
+}
+
+static enum EpdDrawError
+epdiy_update_prepared_area(EpdRect area, const char* stage, int clear_count) {
+  enum EpdDrawMode mode =
+    (s_pending_update_valid && s_pending_update_use_gc16) ?
+      MODE_GL16 :
+      epdiy_current_update_mode();
+  if (clear_count > 0) {
+    epdiy_clear_to_white(area, clear_count, _clear_cycle_time);
+  }
+  enum EpdDrawError err = epd_hl_update_area(&hl, mode, temperature, area);
+  if (err == EPD_DRAW_SUCCESS) {
+    if (!epdiy_verify_power_after_update(stage)) {
+      epdiy_mark_pending_update(area, stage, 1);
+      return EPDIY_DRAW_POWER_VERIFY_FAILED;
+    }
+    epdiy_clear_pending_update();
+  } else {
+    epdiy_mark_pending_update(area, stage, clear_count > 0 ? clear_count : 1);
+  }
+  return err;
+}
+
+static void epdiy_schedule_pending_update_retry() {
+  if (s_pending_retry_task_running || !s_pending_update_valid) {
+    return;
+  }
+
+  s_pending_retry_task_running = true;
+  BaseType_t ret = xTaskCreate(&epdiy_pending_update_retry_task,
+                               "epdiy_pending_retry", 1024 * 4, NULL, 4, NULL);
+  if (ret != pdPASS) {
+    s_pending_retry_task_running = false;
+    ESP_LOGW(TAG, "create pending update retry task failed");
+  }
+}
+
+static void epdiy_pending_update_retry_task(void* arg) {
+  (void)arg;
+  vTaskDelay(pdMS_TO_TICKS(EPDIY_PENDING_RETRY_DELAY_MS));
+
+  if (!epdiy_take_update_lock(pdMS_TO_TICKS(5000))) {
+    s_pending_retry_task_running = false;
+    epdiy_schedule_pending_update_retry();
+    vTaskDelete(NULL);
+    return;
+  }
+
+  s_pending_retry_task_running = false;
+  if (!s_pending_update_valid) {
+    epdiy_give_update_lock();
+    vTaskDelete(NULL);
+    return;
+  }
+
+  EpdRect area = s_pending_update_area;
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif
+
+  EpdRect update_area;
+  int     clear_count = 0;
+  bool did_poweron = epdiy_prepare_update_area(area, &update_area, &clear_count,
+                                               "pending retry", 0);
+  if (did_poweron) {
+    enum EpdDrawError err =
+      epdiy_update_prepared_area(update_area, "pending retry", clear_count);
+    if (err != EPD_DRAW_SUCCESS) {
+      epdiy_force_full_repaint_after_draw_error(err, "pending retry");
+    }
+  }
+
+  if (!epdiy_is_locking_poweron()) {
+    epd_poweroff();
+  }
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif
+
+  bool needs_retry = s_pending_update_valid;
+  epdiy_give_update_lock();
+  if (needs_retry) {
+    epdiy_schedule_pending_update_retry();
+  }
+
+  vTaskDelete(NULL);
+}
+
 /* A copy from epd_copy_to_framebuffer with temporary lenght prediction */
-void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
+void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data) {
   assert(framebuffer != NULL);
 
   auto display_width  = epd_rotated_display_width();
   auto display_height = epd_rotated_display_height();
   for (uint32_t i = 0; i < image_area.width * image_area.height; i++) {
-    uint8_t val = image_data[i] ? 0xff : 0x00;
+    uint8_t val = epdiy_color_to_gray4(image_data[i]);
 
     int xx = image_area.x + i % image_area.width;
     if (xx < 0 || xx >= display_width) {
@@ -122,7 +436,7 @@ void buf_copy_to_framebuffer(EpdRect image_area, const uint8_t* image_data) {
     if (xx % 2) {
       *buf_ptr = (*buf_ptr & 0x0F) | (val << 4);
     } else {
-      *buf_ptr = (*buf_ptr & 0xF0) | (val >> 4);
+      *buf_ptr = (*buf_ptr & 0xF0) | val;
     }
   }
 }
@@ -170,8 +484,8 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
 #else
 
-  uint8_t* buf = (uint8_t*)color_map;
-  buf_copy_to_framebuffer(update_area, buf);
+  epdiy_take_update_lock(portMAX_DELAY);
+  buf_copy_to_framebuffer(update_area, color_map);
 
   static int  x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
   static bool has_paint_all = false;
@@ -208,15 +522,20 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     if (has_paint_all) {
       epdiy_repaint(update_area);
     } else {
-      if (epdiy_auto_poweron()) {
-        auto err = epd_hl_update_area(&hl, updateMode, temperature, update_area);
+      int  clear_count = 0;
+      bool update_ok   = false;
+      bool did_poweron = epdiy_prepare_update_area(
+        update_area, &update_area, &clear_count, "partial update", 0);
+      if (did_poweron) {
+        auto err  = epdiy_update_prepared_area(update_area, "partial update",
+                                               clear_count);
+        update_ok = err == EPD_DRAW_SUCCESS;
         if (err != EPD_DRAW_SUCCESS) {
-          epdiy_handle_draw_error(err);
-          epdiy_repaint_full_screen(false);
+          epdiy_force_full_repaint_after_draw_error(err, "partial update");
         }
       }
 
-      if (has_paint_all_after) {
+      if (update_ok && has_paint_all_after) {
         epdiy_repaint_full_screen(false);
       }
 
@@ -233,8 +552,10 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     x2 = y2 = -1;
     has_paint_all = false;
     has_paint_all_after = false;
+    epdiy_give_update_lock();
   } else {
     lv_disp_flush_ready(drv);
+    epdiy_give_update_lock();
   }
 #endif
 }
@@ -251,21 +572,35 @@ void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
                      lv_coord_t     y,
                      lv_color_t     color,
                      lv_opa_t       opa) {
-  uint8_t epd_color = color.full;
-  if (epd_color < 250 && updateMode == MODE_DU) {
-    epd_color = 0;
-  }
+  uint8_t epd_color = epdiy_color_to_gray4(color);
   //Instead of using epd_draw_pixel: Set pixel directly in *buf that comes afterwards in flush as *color_map
   uint32_t idx = y * buf_w / 2 + x / 2;
   if (x % 2) {
-    buf[idx] = (buf[idx] & 0x0F) | (epd_color & 0xF0);
+    buf[idx] = (buf[idx] & 0x0F) | (epd_color << 4);
   } else {
-    buf[idx] = (buf[idx] & 0xF0) | (epd_color >> 4);
+    buf[idx] = (buf[idx] & 0xF0) | epd_color;
   }
 }
 
 void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
   _epdiy_flush_type_cb = cb;
+}
+
+void epdiy_set_16_grayscale_enabled(bool enabled) {
+  bool was_enabled       = s_16_grayscale_enabled;
+  s_16_grayscale_enabled = enabled;
+  int target_pclk =
+    epdiy_lcd_pclk_for_refresh_mode(s_lcd_pclk_default_mhz, enabled);
+  epdiy_set_lcd_pclk_if_changed(target_pclk,
+                                enabled ? "enable GC16" : "disable GC16");
+  if (was_enabled && !enabled) {
+    epdiy_normalize_framebuffer_to_mono();
+  }
+  ESP_LOGW(TAG, "16 grayscale %s", enabled ? "enabled" : "disabled");
+}
+
+bool epdiy_is_16_grayscale_enabled() {
+  return s_16_grayscale_enabled;
 }
 
 // -1 means is suspending, 0 means has task running
@@ -285,8 +620,8 @@ void paint_task_cb(void* arg) {
       static bool has_paint_all_after = false;
       auto        area          = first->area;
 
-      uint8_t* buf = (uint8_t*)first->color_map;
-      buf_copy_to_framebuffer(area, buf);
+      epdiy_take_update_lock(portMAX_DELAY);
+      buf_copy_to_framebuffer(area, first->color_map);
 
       /**
        * This seems will destroy `color_map`, so call after used `color_map`
@@ -324,15 +659,20 @@ void paint_task_cb(void* arg) {
         if (has_paint_all) {
           epdiy_repaint(area);
         } else {
-          if (epdiy_auto_poweron()) {
-            auto err = epd_hl_update_area(&hl, updateMode, temperature, area);
+          int  clear_count = 0;
+          bool update_ok   = false;
+          bool did_poweron = epdiy_prepare_update_area(
+            area, &area, &clear_count, "partial update", 0);
+          if (did_poweron) {
+            auto err =
+              epdiy_update_prepared_area(area, "partial update", clear_count);
+            update_ok = err == EPD_DRAW_SUCCESS;
             if (err != EPD_DRAW_SUCCESS) {
-              epdiy_handle_draw_error(err);
-              epdiy_repaint_full_screen(false);
+              epdiy_force_full_repaint_after_draw_error(err, "partial update");
             }
           }
 
-          if (has_paint_all_after) {
+          if (update_ok && has_paint_all_after) {
             epdiy_repaint_full_screen(false);
           }
 
@@ -356,6 +696,7 @@ void paint_task_cb(void* arg) {
         paint_queue.erase(paint_queue.begin());
         xSemaphoreGive(paint_queue_xMutex);
       }
+      epdiy_give_update_lock();
     } else if (whole_repainting) {
       _paint_empty_run_count = 0;
 
@@ -419,6 +760,9 @@ bool epdiy_is_locking_poweron() {
 
 /* Check if epdiy paint thread can pause */
 bool epdiy_check_pause() {
+  if (s_pending_update_valid || s_pending_retry_task_running) {
+    return false;
+  }
 #ifndef USE_PARALLEL_PAINT
   return true;
 #endif
@@ -498,39 +842,222 @@ void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
 #endif
 }
 
-void epdiy_repaint_full_screen(bool need_power) {
+void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!framebuffer) {
+    return;
+  }
+  int display_width  = epd_rotated_display_width();
+  int display_height = epd_rotated_display_height();
+  if (x < 0 || y < 0 || x >= display_width || y >= display_height) {
+    return;
+  }
+
+  gray &= 0x0F;
+  uint8_t* buf_ptr = &framebuffer[y * display_width / 2 + x / 2];
+  if (x % 2) {
+    *buf_ptr = (*buf_ptr & 0x0F) | (gray << 4);
+  } else {
+    *buf_ptr = (*buf_ptr & 0xF0) | gray;
+  }
+#endif
+}
+
+static bool epdiy_framebuffer_area_is_valid(EpdRect area) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  int display_width  = epd_rotated_display_width();
+  int display_height = epd_rotated_display_height();
+  // 4-bit framebuffer packs two pixels per byte. Snapshot/restore only handles
+  // byte-aligned rectangles so copying can stay row-based and cheap.
+  return framebuffer && area.width > 0 && area.height > 0 && area.x >= 0 &&
+         area.y >= 0 && area.x + area.width <= display_width &&
+         area.y + area.height <= display_height && area.x % 2 == 0 &&
+         area.width % 2 == 0;
+#else
+  return false;
+#endif
+}
+
+size_t epdiy_framebuffer_area_snapshot_size(EpdRect area) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (!epdiy_framebuffer_area_is_valid(area)) {
+    return 0;
+  }
+  return (size_t)(area.width / 2) * (size_t)area.height;
+#else
+  return 0;
+#endif
+}
+
+static bool epdiy_copy_framebuffer_area(EpdRect  area,
+                                        uint8_t* buffer,
+                                        size_t   buffer_size,
+                                        bool     restore) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  size_t required = epdiy_framebuffer_area_snapshot_size(area);
+  if (required == 0 || !buffer || buffer_size < required) {
+    return false;
+  }
+
+  size_t   row_bytes         = (size_t)area.width / 2;
+  size_t   framebuffer_pitch = (size_t)epd_rotated_display_width() / 2;
+  uint8_t* framebuffer_row =
+    framebuffer + (size_t)area.y * framebuffer_pitch + (size_t)area.x / 2;
+
+  // The screen pitch can be wider than the copied rect, so copy row by row.
+  for (int row = 0; row < area.height; row++) {
+    uint8_t* framebuffer_line =
+      framebuffer_row + (size_t)row * framebuffer_pitch;
+    uint8_t* buffer_line = buffer + (size_t)row * row_bytes;
+    if (restore) {
+      memcpy(framebuffer_line, buffer_line, row_bytes);
+    } else {
+      memcpy(buffer_line, framebuffer_line, row_bytes);
+    }
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool epdiy_snapshot_framebuffer_area(EpdRect  area,
+                                     uint8_t* buffer,
+                                     size_t   buffer_size) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  return epdiy_copy_framebuffer_area(area, buffer, buffer_size, false);
+#else
+  return false;
+#endif
+}
+
+bool epdiy_restore_framebuffer_area(EpdRect        area,
+                                    const uint8_t* buffer,
+                                    size_t         buffer_size,
+                                    bool           repaint) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  bool restored = epdiy_copy_framebuffer_area(
+    area, const_cast<uint8_t*>(buffer), buffer_size, true);
+  if (!restored) {
+    return false;
+  }
+
+  if (!repaint) {
+    return true;
+  }
+  return epdiy_update_framebuffer_area(area) == EPD_DRAW_SUCCESS;
+#else
+  return false;
+#endif
+}
+
+int epdiy_update_framebuffer_area(EpdRect area) {
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  enum EpdDrawError err = EPD_DRAW_SUCCESS;
+
+  epdiy_take_update_lock(portMAX_DELAY);
+
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+  #endif
+
+  EpdRect update_area;
+  int     clear_count = 0;
+  bool did_poweron = epdiy_prepare_update_area(area, &update_area, &clear_count,
+                                               "framebuffer update", 0);
+  if (did_poweron) {
+    err = epdiy_update_prepared_area(update_area, "framebuffer update",
+                                     clear_count);
+    if (err != EPD_DRAW_SUCCESS) {
+      epdiy_force_full_repaint_after_draw_error(err, "framebuffer update");
+    }
+  }
+  if (!epdiy_is_locking_poweron()) {
+    epd_poweroff();
+  }
+
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+  #endif
+
+  epdiy_give_update_lock();
+
+  return (int)err;
+#else
+  epdiy_repaint(area);
+  return 0;
+#endif
+}
+
+enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 
-  memset(hl.back_fb, 0xFF, epd_width() / 2 * epd_height());
+  enum EpdDrawError err  = EPD_DRAW_SUCCESS;
+  EpdRect           area = epd_full_screen();
 
-  if (!need_power || epdiy_auto_poweron()) {
-    auto area = epd_full_screen();
-    epd_clear_area_cycles(area, 1, _clear_cycle_time);
-    epd_hl_update_area(&hl, updateMode, temperature, area);
+  epdiy_take_update_lock(portMAX_DELAY);
+
+  bool can_update  = true;
+  int  clear_count = 1;
+  if (need_power) {
+    can_update =
+      epdiy_prepare_update_area(area, &area, &clear_count, "full repaint", 1);
+  } else {
+    area        = epdiy_area_with_pending(area, "full repaint");
+    clear_count = epdiy_pending_clear_count_with(1);
+  }
+
+  if (can_update) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+      err = epdiy_update_prepared_area(area, "full repaint", clear_count);
+      if (err == EPD_DRAW_SUCCESS) {
+        break;
+      }
+      bool can_retry = epdiy_handle_draw_error(err, "full repaint");
+      if (!can_retry || s_lcd_pclk_mhz <= EPDIY_LCD_PCLK_MIN_MHZ) {
+        break;
+      }
+      ESP_LOGW(TAG, "retry full repaint after reducing lcd pixel clock");
+    }
   }
   if (need_power && !epdiy_is_locking_poweron()) {
     epd_poweroff();
   }
+  epdiy_give_update_lock();
+  return err;
 
 #else
 
   epdiy_repaint(epd_full_screen());
+  return EPD_DRAW_SUCCESS;
 
 #endif
 }
 
 /* refresh area */
 void epdiy_repaint(EpdRect area) {
-  if (epdiy_auto_poweron()) {
+  epdiy_take_update_lock(portMAX_DELAY);
+
 #ifdef CONFIG_IDF_TARGET_ESP32S3
-    epdiy_clear_to_white(area, 1, _clear_cycle_time);
-    epd_hl_update_area(&hl, updateMode, temperature, area);
-#else
-    epd_clear_area_cycles(area, 1, _clear_cycle_time);
-    epd_hl_update_area_directly(&hl, updateMode, temperature, area);
-#endif
+  EpdRect update_area;
+  int     clear_count = 1;
+  if (epdiy_prepare_update_area(area, &update_area, &clear_count,
+                                "repaint area", 1)) {
+    auto err =
+      epdiy_update_prepared_area(update_area, "repaint area", clear_count);
+    if (err != EPD_DRAW_SUCCESS) {
+      epdiy_force_full_repaint_after_draw_error(err, "repaint area");
+    }
   }
+#else
+  if (epdiy_auto_poweron()) {
+    epd_clear_area_cycles(area, 1, _clear_cycle_time);
+    epd_hl_update_area_directly(&hl, epdiy_current_update_mode(), temperature,
+                                area);
+  }
+#endif
   if (!epdiy_is_locking_poweron()) {
     epd_poweroff();
   }
+  epdiy_give_update_lock();
 }
