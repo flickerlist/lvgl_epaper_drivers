@@ -59,12 +59,14 @@ static SemaphoreHandle_t epdiy_update_xMutex = NULL;
 bool                     whole_repainting    = false;  // Whole repaint task
 
 static const int               EPDIY_PENDING_RETRY_DELAY_MS = 500;
+static const int               EPDIY_PENDING_RETRY_MAX       = 3;
 static bool                    s_pending_update_valid       = false;
 static EpdRect                 s_pending_update_area        = {0, 0, 0, 0};
 static bool                    s_pending_update_use_gc16    = false;
 static int                     s_pending_update_clear_count = 0;
+static int                     s_pending_retry_count        = 0;
 static bool                    s_pending_retry_task_running = false;
-static const enum EpdDrawError EPDIY_DRAW_POWER_VERIFY_FAILED =
+static const enum EpdDrawError EPDIY_DRAW_POWER_ON_FAILED =
   (enum EpdDrawError)0x800;
 
 #if CONFIG_PM_ENABLE
@@ -264,8 +266,9 @@ epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count) {
     return;
   }
 
-  bool use_gc16 = epdiy_is_16_grayscale_enabled();
-  clear_count   = epdiy_pending_clear_count_with(clear_count);
+  bool was_pending = s_pending_update_valid;
+  bool use_gc16    = epdiy_is_16_grayscale_enabled();
+  clear_count      = epdiy_pending_clear_count_with(clear_count);
   if (s_pending_update_valid) {
     area     = epdiy_merge_area(area, s_pending_update_area);
     use_gc16 = use_gc16 || s_pending_update_use_gc16;
@@ -275,6 +278,9 @@ epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count) {
   s_pending_update_use_gc16    = use_gc16;
   s_pending_update_clear_count = clear_count;
   s_pending_update_valid       = true;
+  if (!was_pending) {
+    s_pending_retry_count = 0;
+  }
   if (clear_count > 0) {
     epdiy_log_area(use_gc16 ? "pending clear GC16" : "pending clear DU", stage,
                    area);
@@ -288,6 +294,7 @@ static void epdiy_clear_pending_update() {
   s_pending_update_valid       = false;
   s_pending_update_use_gc16    = false;
   s_pending_update_clear_count = 0;
+  s_pending_retry_count        = 0;
 }
 
 static bool epdiy_prepare_update_area(EpdRect     requested_area,
@@ -313,19 +320,6 @@ static bool epdiy_prepare_update_area(EpdRect     requested_area,
   return false;
 }
 
-static bool epdiy_verify_power_after_update(const char* stage) {
-#ifdef CONFIG_IDF_TARGET_ESP32S3
-  if (epd_poweron()) {
-    return true;
-  }
-  ESP_LOGW(TAG, "%s power check failed after draw; keep update pending",
-           stage ? stage : "draw");
-  return false;
-#else
-  return true;
-#endif
-}
-
 static enum EpdDrawError
 epdiy_update_prepared_area(EpdRect area, const char* stage, int clear_count) {
   enum EpdDrawMode mode =
@@ -337,10 +331,6 @@ epdiy_update_prepared_area(EpdRect area, const char* stage, int clear_count) {
   }
   enum EpdDrawError err = epd_hl_update_area(&hl, mode, temperature, area);
   if (err == EPD_DRAW_SUCCESS) {
-    if (!epdiy_verify_power_after_update(stage)) {
-      epdiy_mark_pending_update(area, stage, 1);
-      return EPDIY_DRAW_POWER_VERIFY_FAILED;
-    }
     epdiy_clear_pending_update();
   } else {
     epdiy_mark_pending_update(area, stage, clear_count > 0 ? clear_count : 1);
@@ -349,7 +339,8 @@ epdiy_update_prepared_area(EpdRect area, const char* stage, int clear_count) {
 }
 
 static void epdiy_schedule_pending_update_retry() {
-  if (s_pending_retry_task_running || !s_pending_update_valid) {
+  if (s_pending_retry_task_running || !s_pending_update_valid ||
+      s_pending_retry_count >= EPDIY_PENDING_RETRY_MAX) {
     return;
   }
 
@@ -381,6 +372,9 @@ static void epdiy_pending_update_retry_task(void* arg) {
   }
 
   EpdRect area = s_pending_update_area;
+  s_pending_retry_count++;
+  ESP_LOGW(TAG, "pending update retry %d/%d", s_pending_retry_count,
+           EPDIY_PENDING_RETRY_MAX);
 
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
@@ -760,7 +754,7 @@ bool epdiy_is_locking_poweron() {
 
 /* Check if epdiy paint thread can pause */
 bool epdiy_check_pause() {
-  if (s_pending_update_valid || s_pending_retry_task_running) {
+  if (s_pending_retry_task_running) {
     return false;
   }
 #ifndef USE_PARALLEL_PAINT
@@ -971,6 +965,8 @@ int epdiy_update_framebuffer_area(EpdRect area) {
     if (err != EPD_DRAW_SUCCESS) {
       epdiy_force_full_repaint_after_draw_error(err, "framebuffer update");
     }
+  } else {
+    err = EPDIY_DRAW_POWER_ON_FAILED;
   }
   if (!epdiy_is_locking_poweron()) {
     epd_poweroff();
@@ -1002,6 +998,9 @@ enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
   if (need_power) {
     can_update =
       epdiy_prepare_update_area(area, &area, &clear_count, "full repaint", 1);
+    if (!can_update) {
+      err = EPDIY_DRAW_POWER_ON_FAILED;
+    }
   } else {
     area        = epdiy_area_with_pending(area, "full repaint");
     clear_count = epdiy_pending_clear_count_with(1);
