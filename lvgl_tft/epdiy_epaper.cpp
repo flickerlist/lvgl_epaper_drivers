@@ -1421,6 +1421,12 @@ enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
 
   epdiy_take_update_lock(portMAX_DELAY);
 
+  // 公共入口可能绕过常规刷屏包装；单独持锁覆盖上电、波形输出和断电。
+  // PM 锁支持按次数嵌套，外层已有锁时仍需在本层配对释放。
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+  #endif
+
   bool can_update  = true;
   int  clear_count = 1;
   if (need_power) {
@@ -1450,6 +1456,9 @@ enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
   if (need_power && !epdiy_is_locking_poweron()) {
     epd_poweroff();
   }
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+  #endif
   epdiy_give_update_lock();
   return err;
 
@@ -1464,6 +1473,11 @@ enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
 /* refresh area */
 void epdiy_repaint(EpdRect area) {
   epdiy_take_update_lock(portMAX_DELAY);
+
+  // CPU 最大频率锁同时阻止自动轻睡眠，直接局部重绘也需要完整刷新窗口保护。
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+  #endif
 
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   EpdRect update_area;
@@ -1486,5 +1500,8 @@ void epdiy_repaint(EpdRect area) {
   if (!epdiy_is_locking_poweron()) {
     epd_poweroff();
   }
+  #if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+  #endif
   epdiy_give_update_lock();
 }
