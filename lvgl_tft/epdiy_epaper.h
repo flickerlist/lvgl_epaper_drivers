@@ -16,6 +16,7 @@ extern "C" {
   #include "lvgl/lvgl.h"
 #endif
 #include "sdkconfig.h"
+#include <stdint.h>
 
 #ifndef EPDIY_ENABLE_16_GRAYSCALE
   #ifdef CONFIG_LV_EPAPER_EPDIY_16_GRAYSCALE
@@ -38,6 +39,24 @@ void epdiy_init(void);
 void epdiy_flush(lv_disp_drv_t*   drv,
                  const lv_area_t* area,
                  lv_color_t*      color_map);
+
+/* 标识物理刷新完成的帧及时间顺序，供骨架首帧控制逻辑使用。 */
+typedef struct {
+  uint64_t job_id;
+  int64_t  completed_at_us;
+  int32_t  draw_error;
+  bool     menu_feedback;
+} epdiy_async_flush_completion_t;
+
+/* 标记下一帧为菜单反馈，避免该帧的完成事件提前触发页面内容创建。 */
+bool epdiy_request_next_flush_async(void);
+
+/* 将下一次 monitor_cb 与已提交的异步帧关联；此时物理刷新可能尚未完成。 */
+bool epdiy_take_async_monitor_job(uint64_t* job_id);
+
+/* 由 GUI 任务消费物理完成事件，工作任务不直接访问 LVGL 对象或页面状态。 */
+bool epdiy_take_async_flush_completion(
+  epdiy_async_flush_completion_t* completion);
 
 /* Sets a pixel in *buf temporary buffer that comes afterwards in flush as *image_map */
 void epdiy_set_px_cb(lv_disp_drv_t* disp_drv,
@@ -83,7 +102,7 @@ void epdiy_lock_poweron();
 void epdiy_unlock_poweron();
 bool epdiy_is_locking_poweron();
 
-/* set area to white */
+/* 等待已有刷新完成后，在同一访问锁内上电、清白指定区域并按需断电。 */
 void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time);
 
 /* write a 4-bit grayscale pixel into the epdiy framebuffer */

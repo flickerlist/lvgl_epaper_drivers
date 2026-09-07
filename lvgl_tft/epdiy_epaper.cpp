@@ -1,12 +1,16 @@
 #include "epdiy_epaper.h"
+#include "epdiy_async_flush_state.h"
+#include "epdiy_framebuffer_copy.h"
 #include "epd_highlevel.h"
 #include "epdiy_refresh_policy.h"
 #include "esp_log.h"
 #include "esp_pm.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <atomic>
 #include <cstring>
 #include <time.h>
 #include <vector>
@@ -28,7 +32,11 @@ static int          s_lcd_pclk_mhz          = 20;
 static int          s_lcd_pclk_default_mhz  = 20;
 static const int    EPDIY_LCD_PCLK_MIN_MHZ  = EPDIY_GC16_STABLE_LCD_PCLK_MHZ;
 static const int    EPDIY_LCD_PCLK_STEP_MHZ = 2;
-static bool         s_16_grayscale_enabled  = EPDIY_ENABLE_16_GRAYSCALE;
+static std::atomic<bool> s_16_grayscale_enabled{EPDIY_ENABLE_16_GRAYSCALE};
+// 预先映射全部 8 位颜色，复制像素时直接查表，避免每帧重复计算黑白或灰阶值。
+static uint8_t      s_mono_gray4_lut[256];
+static uint8_t      s_gc16_gray4_lut[256];
+static bool         s_gray4_luts_initialized = false;
 
 epdiy_flush_type_cb_t _epdiy_flush_type_cb;
 TaskHandle_t          _paint_task_handle;
@@ -40,10 +48,30 @@ static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
                                                       const char*       stage);
 static enum EpdDrawMode epdiy_current_update_mode();
 static uint8_t          epdiy_color_to_gray4(lv_color_t color);
+static void             epdiy_initialize_gray4_luts();
 static void
 epdiy_mark_pending_update(EpdRect area, const char* stage, int clear_count);
 static void epdiy_pending_update_retry_task(void* arg);
 static void epdiy_schedule_pending_update_retry();
+static bool epdiy_take_update_lock(TickType_t timeout_ticks);
+static void epdiy_give_update_lock();
+static void epdiy_clear_to_white_locked(EpdRect area, int clear_count, int clear_cycle_time);
+
+// 所有共享显示状态的访问都走同一入口，递归调用也不能反向等待帧缓冲。
+class epdiy_update_guard {
+ public:
+  epdiy_update_guard() : locked_(epdiy_take_update_lock(portMAX_DELAY)) {
+    assert(locked_);
+  }
+  ~epdiy_update_guard() {
+    if (locked_) epdiy_give_update_lock();
+  }
+  epdiy_update_guard(const epdiy_update_guard&) = delete;
+  epdiy_update_guard& operator=(const epdiy_update_guard&) = delete;
+
+ private:
+  bool locked_;
+};
 
 typedef struct _paint_t {
   lvgl_epdiy_flush_type_t paint_type;
@@ -69,9 +97,100 @@ static bool                    s_pending_retry_task_running = false;
 static const enum EpdDrawError EPDIY_DRAW_POWER_ON_FAILED =
   (enum EpdDrawError)0x800;
 
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+typedef struct {
+  uint64_t             job_id;
+  EpdRect              area;
+  bool                 repaint_all;
+  bool                 repaint_all_after;
+  epdiy_async_flush_completion_t completion;
+} epdiy_async_flush_job_t;
+
+static QueueHandle_t s_async_job_queue                = NULL;
+static QueueHandle_t s_async_completion_queue         = NULL;
+static SemaphoreHandle_t s_async_framebuffer_available = NULL;
+static TaskHandle_t s_async_epd_task                  = NULL;
+static bool s_async_resources_ready                   = false;
+static bool s_async_frame_owns_framebuffer            = false;
+static bool s_async_menu_feedback                    = false;
+static uint64_t s_async_monitor_job_id                = 0;
+static uint64_t s_async_next_job_id                   = 1;
+static portMUX_TYPE s_async_state_lock = portMUX_INITIALIZER_UNLOCKED;
+static epdiy_async_flush_state s_async_flush_state;
+// owner 仅表示 GUI 分块复制期间的持有者；入队后清空，但信号量仍由物理任务持有。
+static TaskHandle_t s_async_framebuffer_owner = NULL;
+// 下面两项只在更新互斥锁内访问，用于最外层调用释放其自行取得的帧缓冲。
+static unsigned s_update_lock_depth = 0;
+static bool s_update_lock_owns_framebuffer = false;
+
+static void epdiy_set_async_framebuffer_owner(TaskHandle_t owner) {
+  portENTER_CRITICAL(&s_async_state_lock);
+  s_async_framebuffer_owner = owner;
+  portEXIT_CRITICAL(&s_async_state_lock);
+}
+
+static void epdiy_async_worker_task(void* arg);
+static bool epdiy_init_async_worker();
+#endif
+
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t epdiy_pm_lock;
 #endif
+
+// 异步启用后所有帧均交给工作任务；此接口只标记下一帧为菜单反馈，避免其放行页面内容。
+bool epdiy_request_next_flush_async(void) {
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  if (!s_async_resources_ready) {
+    return false;
+  }
+  bool requested = false;
+  portENTER_CRITICAL(&s_async_state_lock);
+  requested = s_async_flush_state.request_next_frame();
+  if (requested) {
+    s_async_menu_feedback = true;
+  }
+  portEXIT_CRITICAL(&s_async_state_lock);
+  if (!requested) {
+    ESP_LOGW(TAG, "event=async_flush_request_rejected");
+  }
+  return requested;
+#else
+  return false;
+#endif
+}
+
+bool epdiy_take_async_monitor_job(uint64_t* job_id) {
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  if (!job_id) {
+    return false;
+  }
+  bool found = false;
+  portENTER_CRITICAL(&s_async_state_lock);
+  if (s_async_monitor_job_id != 0) {
+    *job_id = s_async_monitor_job_id;
+    s_async_monitor_job_id = 0;
+    found = true;
+  }
+  portEXIT_CRITICAL(&s_async_state_lock);
+  return found;
+#else
+  (void)job_id;
+  return false;
+#endif
+}
+
+bool epdiy_take_async_flush_completion(
+  epdiy_async_flush_completion_t* completion) {
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  if (!completion || !s_async_completion_queue) {
+    return false;
+  }
+  return xQueueReceive(s_async_completion_queue, completion, 0) == pdTRUE;
+#else
+  (void)completion;
+  return false;
+#endif
+}
 
 /* Display initialization routine */
 void epdiy_init(void) {
@@ -84,9 +203,12 @@ void epdiy_init(void) {
   hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   framebuffer            = epd_hl_get_framebuffer(&hl);
-  s_lcd_pclk_default_mhz = epd_get_display()->bus_speed;
+  s_lcd_pclk_default_mhz =
+    epdiy_lcd_pclk_for_stable_mono(epd_get_display()->bus_speed);
   s_lcd_pclk_mhz         = s_lcd_pclk_default_mhz;
+  epd_set_lcd_pixel_clock_MHz(s_lcd_pclk_mhz);
   epdiy_set_16_grayscale_enabled(false);
+  epdiy_initialize_gray4_luts();
 
 #if CONFIG_PM_ENABLE
   ESP_ERROR_CHECK(esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "epdiy_pm_lock",
@@ -112,7 +234,57 @@ void epdiy_init(void) {
   xTaskCreatePinnedToCore(&paint_task_cb, "paint_cb", 1024 * 4, NULL, 5,
                           &_paint_task_handle, 1);
 #endif
+
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  s_async_resources_ready = epdiy_init_async_worker();
+  ESP_LOGI(TAG, "EPD async flush %s",
+           s_async_resources_ready ? "enabled" : "disabled");
+#endif
 }
+
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+static bool epdiy_init_async_worker() {
+  // 只有一份帧缓冲，因此同时只允许一个物理刷新任务；信号量保护像素所有权。
+  s_async_job_queue = xQueueCreate(1, sizeof(epdiy_async_flush_job_t));
+  s_async_completion_queue =
+    xQueueCreate(4, sizeof(epdiy_async_flush_completion_t));
+  s_async_framebuffer_available = xSemaphoreCreateBinary();
+  if (!s_async_job_queue || !s_async_completion_queue ||
+      !s_async_framebuffer_available) {
+    ESP_LOGE(TAG, "failed to allocate async flush resources");
+    if (s_async_job_queue) {
+      vQueueDelete(s_async_job_queue);
+      s_async_job_queue = NULL;
+    }
+    if (s_async_completion_queue) {
+      vQueueDelete(s_async_completion_queue);
+      s_async_completion_queue = NULL;
+    }
+    if (s_async_framebuffer_available) {
+      vSemaphoreDelete(s_async_framebuffer_available);
+      s_async_framebuffer_available = NULL;
+    }
+    return false;
+  }
+
+  xSemaphoreGive(s_async_framebuffer_available);
+  BaseType_t created = xTaskCreatePinnedToCore(
+    &epdiy_async_worker_task, "epd_async", 1024 * 6, NULL, 5,
+    &s_async_epd_task, 1);
+  if (created != pdPASS) {
+    ESP_LOGE(TAG, "failed to create async flush worker");
+    vQueueDelete(s_async_job_queue);
+    vQueueDelete(s_async_completion_queue);
+    vSemaphoreDelete(s_async_framebuffer_available);
+    s_async_job_queue = NULL;
+    s_async_completion_queue = NULL;
+    s_async_framebuffer_available = NULL;
+    s_async_epd_task = NULL;
+    return false;
+  }
+  return true;
+}
+#endif
 
 static bool epdiy_reduce_lcd_pclk_after_underrun(const char* stage) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
@@ -184,6 +356,24 @@ static uint8_t epdiy_color_to_gray4(lv_color_t color) {
   return (brightness + 8) / 17;
 }
 
+static void epdiy_initialize_gray4_luts() {
+#if LV_COLOR_DEPTH == 8
+  if (s_gray4_luts_initialized) {
+    return;
+  }
+  static_assert(sizeof(lv_color_t) == 1,
+                "LVGL 8-bit color must occupy exactly one byte");
+  for (int i = 0; i < 256; ++i) {
+    lv_color_t color = {};
+    color.full = (uint8_t)i;
+    s_mono_gray4_lut[i] = lv_color_to1(color) ? 0x0F : 0x00;
+    // 与逐像素路径使用相同的取整规则，保持查表优化前后的灰阶输出一致。
+    s_gc16_gray4_lut[i] = (lv_color_brightness(color) + 8) / 17;
+  }
+  s_gray4_luts_initialized = true;
+#endif
+}
+
 static uint8_t epdiy_gray4_to_mono(uint8_t gray) {
   return (gray & 0x0F) >= 8 ? 0x0F : 0x00;
 }
@@ -211,13 +401,53 @@ static bool epdiy_take_update_lock(TickType_t timeout_ticks) {
   if (!epdiy_update_xMutex) {
     return true;
   }
-  return xSemaphoreTakeRecursive(epdiy_update_xMutex, timeout_ticks) == pdTRUE;
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  TaskHandle_t current = xTaskGetCurrentTaskHandle();
+  bool recursive = xSemaphoreGetMutexHolder(epdiy_update_xMutex) == current;
+  bool acquired_framebuffer = false;
+  if (!recursive && s_async_resources_ready && current != s_async_epd_task) {
+    portENTER_CRITICAL(&s_async_state_lock);
+    bool owns_frame = s_async_framebuffer_owner == current;
+    portEXIT_CRITICAL(&s_async_state_lock);
+    if (!owns_frame) {
+      // 必须先等帧缓冲、再拿更新锁。否则外部调用会占锁等待工作任务，造成互相等待。
+      // 已入队但尚未开始的帧同样持有信号量，外部操作不能提前改模式、像素或电源。
+      TickType_t started = xTaskGetTickCount();
+      if (xSemaphoreTake(s_async_framebuffer_available, timeout_ticks) != pdTRUE) {
+        return false;
+      }
+      acquired_framebuffer = true;
+      if (timeout_ticks != portMAX_DELAY) {
+        TickType_t elapsed = xTaskGetTickCount() - started;
+        timeout_ticks = elapsed < timeout_ticks ? timeout_ticks - elapsed : 0;
+      }
+    }
+  }
+#endif
+  if (xSemaphoreTakeRecursive(epdiy_update_xMutex, timeout_ticks) != pdTRUE) {
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+    if (acquired_framebuffer) xSemaphoreGive(s_async_framebuffer_available);
+#endif
+    return false;
+  }
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  if (!recursive) s_update_lock_owns_framebuffer = acquired_framebuffer;
+  ++s_update_lock_depth;
+#endif
+  return true;
 }
 
 static void epdiy_give_update_lock() {
-  if (epdiy_update_xMutex) {
-    xSemaphoreGiveRecursive(epdiy_update_xMutex);
-  }
+  if (!epdiy_update_xMutex) return;
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  assert(s_update_lock_depth > 0);
+  bool release_framebuffer = --s_update_lock_depth == 0 && s_update_lock_owns_framebuffer;
+  if (release_framebuffer) s_update_lock_owns_framebuffer = false;
+#endif
+  xSemaphoreGiveRecursive(epdiy_update_xMutex);
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  if (release_framebuffer) xSemaphoreGive(s_async_framebuffer_available);
+#endif
 }
 
 static bool epdiy_area_is_valid(EpdRect area) {
@@ -327,7 +557,7 @@ epdiy_update_prepared_area(EpdRect area, const char* stage, int clear_count) {
       MODE_GL16 :
       epdiy_current_update_mode();
   if (clear_count > 0) {
-    epdiy_clear_to_white(area, clear_count, _clear_cycle_time);
+    epdiy_clear_to_white_locked(area, clear_count, _clear_cycle_time);
   }
   enum EpdDrawError err = epd_hl_update_area(&hl, mode, temperature, area);
   if (err == EPD_DRAW_SUCCESS) {
@@ -357,12 +587,8 @@ static void epdiy_pending_update_retry_task(void* arg) {
   (void)arg;
   vTaskDelay(pdMS_TO_TICKS(EPDIY_PENDING_RETRY_DELAY_MS));
 
-  if (!epdiy_take_update_lock(pdMS_TO_TICKS(5000))) {
-    s_pending_retry_task_running = false;
-    epdiy_schedule_pending_update_retry();
-    vTaskDelete(NULL);
-    return;
-  }
+  // 重试任务保持登记状态直到拿到锁，不能在等待超时后无锁改写共享重试标志。
+  epdiy_take_update_lock(portMAX_DELAY);
 
   s_pending_retry_task_running = false;
   if (!s_pending_update_valid) {
@@ -400,11 +626,11 @@ static void epdiy_pending_update_retry_task(void* arg) {
   ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
 #endif
 
-  bool needs_retry = s_pending_update_valid;
-  epdiy_give_update_lock();
-  if (needs_retry) {
+  // 是否继续重试及任务登记必须与更新共享状态处于同一个锁内。
+  if (s_pending_update_valid) {
     epdiy_schedule_pending_update_retry();
   }
+  epdiy_give_update_lock();
 
   vTaskDelete(NULL);
 }
@@ -415,6 +641,22 @@ void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data) {
 
   auto display_width  = epd_rotated_display_width();
   auto display_height = epd_rotated_display_height();
+#if LV_COLOR_DEPTH == 8
+  epdiy_initialize_gray4_luts();
+  const uint8_t* gray4_lut = epdiy_is_16_grayscale_enabled() ?
+                               s_gc16_gray4_lut :
+                               s_mono_gray4_lut;
+  EpdiyCopyArea copy_area = {
+    .x = image_area.x,
+    .y = image_area.y,
+    .width = image_area.width,
+    .height = image_area.height,
+  };
+  epdiy_copy_lvgl8_to_gray4(framebuffer, display_width, display_height,
+                            copy_area,
+                            reinterpret_cast<const uint8_t*>(image_data),
+                            gray4_lut);
+#else
   for (uint32_t i = 0; i < image_area.width * image_area.height; i++) {
     uint8_t val = epdiy_color_to_gray4(image_data[i]);
 
@@ -433,12 +675,103 @@ void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data) {
       *buf_ptr = (*buf_ptr & 0xF0) | val;
     }
   }
+#endif
 }
+
+// 同步回退和异步任务共用物理刷新流程，统一保留电源管理与绘制失败恢复。
+static int32_t epdiy_execute_physical_update(
+  EpdRect update_area,
+  bool repaint_all,
+  bool repaint_all_after) {
+  int32_t draw_error = EPD_DRAW_SUCCESS;
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
+#endif
+
+  if (repaint_all) {
+    epdiy_repaint(update_area);
+  } else {
+    int clear_count = 0;
+    bool update_ok = false;
+    bool did_poweron = epdiy_prepare_update_area(
+      update_area, &update_area, &clear_count, "partial update", 0);
+    if (did_poweron) {
+      auto err = epdiy_update_prepared_area(update_area, "partial update",
+                                            clear_count);
+      draw_error = (int32_t)err;
+      update_ok = err == EPD_DRAW_SUCCESS;
+      if (!update_ok) {
+        epdiy_force_full_repaint_after_draw_error(err, "partial update");
+      }
+    } else {
+      draw_error = (int32_t)EPDIY_DRAW_POWER_ON_FAILED;
+    }
+
+    if (update_ok && repaint_all_after) {
+      auto err = epdiy_repaint_full_screen(false);
+      if (err != EPD_DRAW_SUCCESS) {
+        draw_error = (int32_t)err;
+      }
+    }
+
+    if (!epdiy_is_locking_poweron()) {
+      epd_poweroff();
+    }
+  }
+
+#if CONFIG_PM_ENABLE
+  ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
+#endif
+  return draw_error;
+}
+
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+static void epdiy_async_worker_task(void* arg) {
+  (void)arg;
+  epdiy_async_flush_job_t job = {};
+  while (true) {
+    if (xQueueReceive(s_async_job_queue, &job, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+
+    epdiy_take_update_lock(portMAX_DELAY);
+    job.completion.draw_error = epdiy_execute_physical_update(
+      job.area, job.repaint_all, job.repaint_all_after);
+    epdiy_give_update_lock();
+    // 记录物理完成时间供骨架帧排序使用，不采集阶段耗时。
+    job.completion.completed_at_us = esp_timer_get_time();
+
+    // 先发布完成事件，再释放帧缓冲；GUI 关联下一帧时才能先消费上一帧的完成通知。
+    if (xQueueSend(s_async_completion_queue, &job.completion,
+                   pdMS_TO_TICKS(1000)) != pdTRUE) {
+      ESP_LOGE(TAG, "async completion queue full, job=%llu",
+               (unsigned long long)job.job_id);
+    }
+
+    portENTER_CRITICAL(&s_async_state_lock);
+    bool completed = s_async_flush_state.complete_job(job.job_id);
+    portEXIT_CRITICAL(&s_async_state_lock);
+    if (!completed) {
+      ESP_LOGE(TAG, "async state completion mismatch, job=%llu",
+               (unsigned long long)job.job_id);
+    }
+    xSemaphoreGive(s_async_framebuffer_available);
+  }
+}
+#endif
 
 /* Required by LVGL. Sends the color_map to the screen with a partial update  */
 void epdiy_flush(lv_disp_drv_t*   drv,
                  const lv_area_t* area,
                  lv_color_t*      color_map) {
+  bool    is_last          = lv_disp_flush_is_last(drv);
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  bool frame_async = false;
+  portENTER_CRITICAL(&s_async_state_lock);
+  frame_async =
+    s_async_resources_ready && s_async_flush_state.begin_flush(is_last);
+  portEXIT_CRITICAL(&s_async_state_lock);
+#endif
   ++flushcalls;
   uint16_t w = lv_area_get_width(area);
   uint16_t h = lv_area_get_height(area);
@@ -450,6 +783,19 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     _epdiy_flush_type_cb ? _epdiy_flush_type_cb(&update_area, flushcalls) :
                            EPDIY_PARTIAL_PAINT;
   if (_paint_type == EPDIY_NO_PAINT) {
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+    if (frame_async && is_last) {
+      portENTER_CRITICAL(&s_async_state_lock);
+      s_async_flush_state.cancel_submission();
+      s_async_menu_feedback = false;
+      portEXIT_CRITICAL(&s_async_state_lock);
+      if (s_async_frame_owns_framebuffer) {
+        s_async_frame_owns_framebuffer = false;
+        epdiy_set_async_framebuffer_owner(NULL);
+        xSemaphoreGive(s_async_framebuffer_available);
+      }
+    }
+#endif
     lv_disp_flush_ready(drv);
     return;
   }
@@ -478,11 +824,28 @@ void epdiy_flush(lv_disp_drv_t*   drv,
 
 #else
 
+  #ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  bool owns_framebuffer_slot = false;
+  if (s_async_resources_ready) {
+    if (!frame_async || !s_async_frame_owns_framebuffer) {
+      // 等上一帧物理刷新结束后才能覆盖像素；同一帧的多个分块持续持有该信号量。
+      xSemaphoreTake(s_async_framebuffer_available, portMAX_DELAY);
+      epdiy_set_async_framebuffer_owner(xTaskGetCurrentTaskHandle());
+      if (frame_async) {
+        s_async_frame_owns_framebuffer = true;
+      }
+    }
+    owns_framebuffer_slot = true;
+  }
+  #endif
+
   epdiy_take_update_lock(portMAX_DELAY);
+
   buf_copy_to_framebuffer(update_area, color_map);
 
+  // 合并本帧各个 LVGL 分块的区域和刷新类型，仅在最后一个分块提交物理任务。
   static int  x1 = 65535, y1 = 65535, x2 = -1, y2 = -1;
-  static bool has_paint_all = false;
+  static bool has_paint_all       = false;
   static bool has_paint_all_after = false;
   // capture the upper left and lower right corners
   if (area->x1 < x1)
@@ -500,56 +863,89 @@ void epdiy_flush(lv_disp_drv_t*   drv,
     has_paint_all_after = true;
   }
 
-  if (lv_disp_flush_is_last(drv)) {
-    lv_disp_flush_ready(drv);
-
+  if (is_last) {
     // reset area
     update_area.x      = x1;
     update_area.y      = y1;
     update_area.width  = (x2 - x1) + 1;
     update_area.height = (y2 - y1) + 1;
 
-  #if CONFIG_PM_ENABLE
-    ESP_ERROR_CHECK(esp_pm_lock_acquire(epdiy_pm_lock));
-  #endif
+  #ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+    if (frame_async && s_async_resources_ready) {
+      epdiy_async_flush_job_t job = {};
+      job.job_id                  = s_async_next_job_id++;
+      if (job.job_id == 0) {
+        job.job_id = s_async_next_job_id++;
+      }
+      job.area              = update_area;
+      job.repaint_all       = has_paint_all;
+      job.repaint_all_after = has_paint_all_after;
+      job.completion.job_id = job.job_id;
+      portENTER_CRITICAL(&s_async_state_lock);
+      job.completion.menu_feedback = s_async_menu_feedback;
+      s_async_menu_feedback        = false;
+      portEXIT_CRITICAL(&s_async_state_lock);
 
-    if (has_paint_all) {
-      epdiy_repaint(update_area);
-    } else {
-      int  clear_count = 0;
-      bool update_ok   = false;
-      bool did_poweron = epdiy_prepare_update_area(
-        update_area, &update_area, &clear_count, "partial update", 0);
-      if (did_poweron) {
-        auto err  = epdiy_update_prepared_area(update_area, "partial update",
-                                               clear_count);
-        update_ok = err == EPD_DRAW_SUCCESS;
-        if (err != EPD_DRAW_SUCCESS) {
-          epdiy_force_full_repaint_after_draw_error(err, "partial update");
+      if (xQueueSend(s_async_job_queue, &job, 0) == pdTRUE) {
+        portENTER_CRITICAL(&s_async_state_lock);
+        bool submitted         = s_async_flush_state.submit_job(job.job_id);
+        s_async_monitor_job_id = job.job_id;
+        portEXIT_CRITICAL(&s_async_state_lock);
+
+        // 入队成功后帧缓冲已交给工作任务；即使状态登记异常，也不能再同步刷同一帧，
+        // 否则两个执行路径会并发读取和更新同一份帧缓冲。
+        if (!submitted) {
+          ESP_LOGE(TAG, "async state submit failed, job=%llu",
+                   (unsigned long long)job.job_id);
         }
-      }
+        s_async_frame_owns_framebuffer = false;
+        epdiy_set_async_framebuffer_owner(NULL);
 
-      if (update_ok && has_paint_all_after) {
-        epdiy_repaint_full_screen(false);
-      }
+        x1 = y1 = 65535;
+        x2 = y2             = -1;
+        has_paint_all       = false;
+        has_paint_all_after = false;
+        epdiy_give_update_lock();
+        lv_disp_flush_ready(drv);
 
-      if (!epdiy_is_locking_poweron()) {
-        epd_poweroff();
+        return;
+      } else {
+        portENTER_CRITICAL(&s_async_state_lock);
+        s_async_flush_state.cancel_submission();
+        s_async_menu_feedback = false;
+        portEXIT_CRITICAL(&s_async_state_lock);
+        // 入队失败时帧缓冲仍由当前调用持有，随后沿同步路径完成本帧。
+        ESP_LOGE(TAG, "event=async_flush_fallback reason=queue_full");
       }
     }
-
-  #if CONFIG_PM_ENABLE
-    ESP_ERROR_CHECK(esp_pm_lock_release(epdiy_pm_lock));
   #endif
+
+    lv_disp_flush_ready(drv);
+    epdiy_execute_physical_update(update_area, has_paint_all,
+                                  has_paint_all_after);
+
     // reset update boundary
     x1 = y1 = 65535;
-    x2 = y2 = -1;
-    has_paint_all = false;
+    x2 = y2             = -1;
+    has_paint_all       = false;
     has_paint_all_after = false;
     epdiy_give_update_lock();
+  #ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+    if (owns_framebuffer_slot) {
+      s_async_frame_owns_framebuffer = false;
+      epdiy_set_async_framebuffer_owner(NULL);
+      xSemaphoreGive(s_async_framebuffer_available);
+    }
+  #endif
   } else {
     lv_disp_flush_ready(drv);
     epdiy_give_update_lock();
+  #ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+    if (owns_framebuffer_slot && !frame_async) {
+      epdiy_set_async_framebuffer_owner(NULL);
+      xSemaphoreGive(s_async_framebuffer_available);
+    }
+  #endif
   }
 #endif
 }
@@ -581,8 +977,8 @@ void set_epdiy_flush_type_cb(epdiy_flush_type_cb_t cb) {
 }
 
 void epdiy_set_16_grayscale_enabled(bool enabled) {
+  epdiy_update_guard guard;
   bool was_enabled       = s_16_grayscale_enabled;
-  s_16_grayscale_enabled = enabled;
   int target_pclk =
     epdiy_lcd_pclk_for_refresh_mode(s_lcd_pclk_default_mhz, enabled);
   epdiy_set_lcd_pclk_if_changed(target_pclk,
@@ -590,6 +986,8 @@ void epdiy_set_16_grayscale_enabled(bool enabled) {
   if (was_enabled && !enabled) {
     epdiy_normalize_framebuffer_to_mono();
   }
+  // 改完时钟和像素后才发布新模式；只读查询无需等待工作任务，保持菜单构建的并行性。
+  s_16_grayscale_enabled = enabled;
   ESP_LOGW(TAG, "16 grayscale %s", enabled ? "enabled" : "disabled");
 }
 
@@ -716,8 +1114,9 @@ void paint_task_cb(void* arg) {
 /**
  * @brief lock on poweron, for continue painting
  */
-bool _is_locking_poweron = false;
+static std::atomic<bool> _is_locking_poweron{false};
 bool epdiy_auto_poweron() {
+  epdiy_update_guard guard;
   if (epdiy_is_locking_poweron()) {
     return true;
   }
@@ -729,6 +1128,7 @@ bool epdiy_auto_poweron() {
 #endif
 }
 void epdiy_lock_poweron() {
+  epdiy_update_guard guard;
   int64_t start = esp_timer_get_time();
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   while (!epd_poweron()) {
@@ -742,6 +1142,7 @@ void epdiy_lock_poweron() {
   _is_locking_poweron = true;
 }
 void epdiy_unlock_poweron() {
+  epdiy_update_guard guard;
   if (_is_locking_poweron) {
     epd_poweroff();
     _is_locking_poweron = false;
@@ -754,9 +1155,20 @@ bool epdiy_is_locking_poweron() {
 
 /* Check if epdiy paint thread can pause */
 bool epdiy_check_pause() {
-  if (s_pending_retry_task_running) {
-    return false;
-  }
+  // 非阻塞检查覆盖已入队、分块复制和正在刷新的帧，不能只看旧的刷屏任务。
+  if (!epdiy_take_update_lock(0)) return false;
+  bool can_pause = !s_pending_retry_task_running;
+#ifdef CONFIG_FL_V4_MENU_FEEDBACK_ASYNC_FLUSH
+  portENTER_CRITICAL(&s_async_state_lock);
+  can_pause = can_pause && !s_async_flush_state.job_in_flight() &&
+              s_async_monitor_job_id == 0;
+  portEXIT_CRITICAL(&s_async_state_lock);
+  // 物理刷新完成后 GUI 还要消费事件，才能放行骨架后的内容创建。
+  can_pause = can_pause && (!s_async_completion_queue ||
+                            uxQueueMessagesWaiting(s_async_completion_queue) == 0);
+#endif
+  epdiy_give_update_lock();
+  if (!can_pause) return false;
 #ifndef USE_PARALLEL_PAINT
   return true;
 #endif
@@ -803,6 +1215,7 @@ void epdiy_repaint_all() {
 }
 
 void epdiy_set_white(EpdRect area) {
+  epdiy_update_guard guard;
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   int width = epd_width();
 #else
@@ -828,15 +1241,27 @@ void epdiy_set_white(EpdRect area) {
   }
 }
 
-/* set area to white */
-void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
+// 内部调用已持有更新锁且已上电，不能在刷新流程中间提前断电。
+static void epdiy_clear_to_white_locked(EpdRect area, int clear_count, int clear_cycle_time) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   epdiy_set_white(area);
   epd_clear_area_cycles(area, clear_count, clear_cycle_time);
 #endif
 }
 
+// 对外清屏将上电、清屏、断电作为一个受保护的操作，调用方无需直接操作电源。
+void epdiy_clear_to_white(EpdRect area, int clear_count, int clear_cycle_time) {
+  epdiy_update_guard guard;
+#ifdef CONFIG_IDF_TARGET_ESP32S3
+  if (epdiy_auto_poweron()) {
+    epdiy_clear_to_white_locked(area, clear_count, clear_cycle_time);
+  }
+  if (!epdiy_is_locking_poweron()) epd_poweroff();
+#endif
+}
+
 void epdiy_set_framebuffer_gray4_pixel(int x, int y, uint8_t gray) {
+  epdiy_update_guard guard;
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   if (!framebuffer) {
     return;
@@ -918,6 +1343,7 @@ static bool epdiy_copy_framebuffer_area(EpdRect  area,
 bool epdiy_snapshot_framebuffer_area(EpdRect  area,
                                      uint8_t* buffer,
                                      size_t   buffer_size) {
+  epdiy_update_guard guard;
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   return epdiy_copy_framebuffer_area(area, buffer, buffer_size, false);
 #else
@@ -929,6 +1355,8 @@ bool epdiy_restore_framebuffer_area(EpdRect        area,
                                     const uint8_t* buffer,
                                     size_t         buffer_size,
                                     bool           repaint) {
+  // 恢复像素和可选重绘持有同一个锁，其他刷新不能插入两者之间。
+  epdiy_update_guard guard;
 #ifdef CONFIG_IDF_TARGET_ESP32S3
   bool restored = epdiy_copy_framebuffer_area(
     area, const_cast<uint8_t*>(buffer), buffer_size, true);
