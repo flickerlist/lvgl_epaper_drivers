@@ -44,8 +44,9 @@ void buf_copy_to_framebuffer(EpdRect image_area, const lv_color_t* image_data);
 void paint_task_cb(void* arg);
 enum EpdDrawError epdiy_repaint_full_screen(bool need_power = true);
 static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage);
-static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
-                                                      const char*       stage);
+static enum EpdDrawError epdiy_force_full_repaint_after_draw_error(
+  enum EpdDrawError err,
+  const char* stage);
 static enum EpdDrawMode epdiy_current_update_mode();
 static uint8_t          epdiy_color_to_gray4(lv_color_t color);
 static void             epdiy_initialize_gray4_luts();
@@ -288,9 +289,10 @@ static bool epdiy_init_async_worker() {
 
 static bool epdiy_reduce_lcd_pclk_after_underrun(const char* stage) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
-  int next_pclk = s_lcd_pclk_mhz > EPDIY_LCD_PCLK_MIN_MHZ ?
-                    s_lcd_pclk_mhz - EPDIY_LCD_PCLK_STEP_MHZ :
-                    EPDIY_LCD_PCLK_MIN_MHZ;
+  int next_pclk = s_lcd_pclk_mhz - EPDIY_LCD_PCLK_STEP_MHZ;
+  if (next_pclk < EPDIY_LCD_PCLK_MIN_MHZ) {
+    next_pclk = EPDIY_LCD_PCLK_MIN_MHZ;
+  }
   if (next_pclk != s_lcd_pclk_mhz) {
     s_lcd_pclk_mhz = next_pclk;
     ESP_LOGW(TAG, "%s underrun, reduce lcd pixel clock to %d MHz",
@@ -331,15 +333,16 @@ static bool epdiy_handle_draw_error(enum EpdDrawError err, const char* stage) {
   return false;
 }
 
-static void epdiy_force_full_repaint_after_draw_error(enum EpdDrawError err,
-                                                      const char*       stage) {
+static enum EpdDrawError epdiy_force_full_repaint_after_draw_error(
+  enum EpdDrawError err,
+  const char* stage) {
   if (!epdiy_handle_draw_error(err, stage)) {
-    return;
+    return err;
   }
 
   ESP_LOGW(TAG, "%s underrun, force full screen repaint",
            stage ? stage : "draw");
-  epdiy_repaint_full_screen(false);
+  return epdiy_repaint_full_screen(false);
 }
 
 static enum EpdDrawMode epdiy_current_update_mode() {
@@ -701,7 +704,8 @@ static int32_t epdiy_execute_physical_update(
       draw_error = (int32_t)err;
       update_ok = err == EPD_DRAW_SUCCESS;
       if (!update_ok) {
-        epdiy_force_full_repaint_after_draw_error(err, "partial update");
+        draw_error = (int32_t)epdiy_force_full_repaint_after_draw_error(
+          err, "partial update");
       }
     } else {
       draw_error = (int32_t)EPDIY_DRAW_POWER_ON_FAILED;
@@ -1441,13 +1445,16 @@ enum EpdDrawError epdiy_repaint_full_screen(bool need_power) {
   }
 
   if (can_update) {
-    for (int attempt = 0; attempt < 4; attempt++) {
+    while (true) {
       err = epdiy_update_prepared_area(area, "full repaint", clear_count);
       if (err == EPD_DRAW_SUCCESS) {
         break;
       }
+      int previous_pclk = s_lcd_pclk_mhz;
       bool can_retry = epdiy_handle_draw_error(err, "full repaint");
-      if (!can_retry || s_lcd_pclk_mhz <= EPDIY_LCD_PCLK_MIN_MHZ) {
+      // 只有实际降低了时钟才再试一次；最低频率本身也必须执行一次，
+      // 到达最低频率后再次失败则终止，避免无界重试。
+      if (!can_retry || s_lcd_pclk_mhz == previous_pclk) {
         break;
       }
       ESP_LOGW(TAG, "retry full repaint after reducing lcd pixel clock");
